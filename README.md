@@ -1,6 +1,6 @@
 # Vela
 
-**Vela** is a statically-typed, compiled programming language targeting a custom 16-bit ARM-like CPU architecture. It is a companion project to the [DE1 CPU ISA](https://github.com/tonno7103/CPU) - Vela compiles `.vl` source files into `.asm` assembly that the CPU's encoder assembles into machine code for simulation on the Verilog hardware model.
+**Vela** is a statically-typed, compiled programming language targeting a custom 16-bit ARM-like CPU architecture. It is a companion project to the [DE1 CPU ISA](https://github.com/tonnoBelloSnello/CPU) - Vela compiles `.vl` source files into `.asm` assembly that the CPU's encoder assembles into machine code for simulation on the Verilog hardware model.
 
 ## Table of Contents
 
@@ -327,7 +327,7 @@ Source (.vl)
 
 ### Target Architecture
 
-The compiler targets the custom 16-bit CPU defined in [DE1](https://github.com/tonno7103/CPU):
+The compiler targets the custom 16-bit CPU defined in [DE1](https://github.com/tonnoBelloSnello/CPU):
 
 - **16-bit registers** R0-R14 (R13 = SP, R14 = LR), separate PC
 - **32-bit fixed-length instructions**

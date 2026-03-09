@@ -1,0 +1,84 @@
+module int {
+    class Int {
+        [[get, visible]] I16 value;
+
+        OnAlloc(I16 val) {
+            value = val;
+        }
+
+        I16 Abs() {
+            if (value < 0) {
+                ret 0 - value;
+            }
+            ret value;
+        }
+
+        I16 Negate() {
+            ret 0 - value;
+        }
+
+        I8 IsPositive() {
+            if (value > 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsNegative() {
+            if (value < 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsZero() {
+            if (value == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I16 Add(I16 other) {
+            ret value + other;
+        }
+
+        I16 Sub(I16 other) {
+            ret value - other;
+        }
+
+        I16 Mul(I16 other) {
+            ret value * other;
+        }
+
+        I8 Equals(I16 other) {
+            if (value == other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I16 MinWith(I16 other) {
+            if (value < other) {
+                ret value;
+            }
+            ret other;
+        }
+
+        I16 MaxWith(I16 other) {
+            if (value > other) {
+                ret value;
+            }
+            ret other;
+        }
+
+        I16 Clamp(I16 lo, I16 hi) {
+            if (value < lo) {
+                ret lo;
+            }
+            if (value > hi) {
+                ret hi;
+            }
+            ret value;
+        }
+    }
+}

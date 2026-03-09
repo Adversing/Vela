@@ -1,0 +1,101 @@
+module array {
+    class Array {
+        I16 data;
+        [[get, visible]] I16 length;
+        I16 capacity;
+
+        OnAlloc(I16 cap) {
+            I16 bytes = cap * 2;
+            data = Malloc(bytes);
+            length = 0;
+            capacity = cap;
+        }
+
+        OnFree {
+            Free(data);
+        }
+
+        I16 Get(I16 index) {
+            ret data[index];
+        }
+
+        U0 Set(I16 index, I16 value) {
+            data[index] = value;
+        }
+
+        U0 Push(I16 value) {
+            data[length] = value;
+            length = length + 1;
+        }
+
+        I16 Pop() {
+            length = length - 1;
+            ret data[length];
+        }
+
+        I8 IsEmpty() {
+            if (length == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I16 First() {
+            ret data[0];
+        }
+
+        I16 Last() {
+            I16 idx = length - 1;
+            ret data[idx];
+        }
+
+        I8 Contains(I16 value) {
+            I16 i = 0;
+            while (i < length) {
+                I16 elem = data[i];
+                if (elem == value) {
+                    ret 1;
+                }
+                i = i + 1;
+            }
+            ret 0;
+        }
+
+        I16 IndexOf(I16 value) {
+            I16 i = 0;
+            while (i < length) {
+                I16 elem = data[i];
+                if (elem == value) {
+                    ret i;
+                }
+                i = i + 1;
+            }
+            I16 neg = 0 - 1;
+            ret neg;
+        }
+
+        U0 Fill(I16 value) {
+            I16 i = 0;
+            while (i < capacity) {
+                data[i] = value;
+                i = i + 1;
+            }
+            length = capacity;
+        }
+
+        U0 Clear() {
+            length = 0;
+        }
+
+        I16 Sum() {
+            I16 total = 0;
+            I16 i = 0;
+            while (i < length) {
+                I16 elem = data[i];
+                total = total + elem;
+                i = i + 1;
+            }
+            ret total;
+        }
+    }
+}

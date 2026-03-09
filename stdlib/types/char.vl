@@ -1,0 +1,86 @@
+module char {
+    class Char {
+        [[get, visible]] U8 value;
+
+        OnAlloc(U8 val) {
+            value = val;
+        }
+
+        I8 IsAlpha() {
+            if (value >= 65) {
+                if (value <= 90) {
+                    ret 1;
+                }
+            }
+            if (value >= 97) {
+                if (value <= 122) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
+        I8 IsDigit() {
+            if (value >= 48) {
+                if (value <= 57) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
+        I8 IsUpper() {
+            if (value >= 65) {
+                if (value <= 90) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
+        I8 IsLower() {
+            if (value >= 97) {
+                if (value <= 122) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
+        I8 IsSpace() {
+            if (value == 32) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        U8 ToUpper() {
+            if (value >= 97) {
+                if (value <= 122) {
+                    ret value - 32;
+                }
+            }
+            ret value;
+        }
+
+        U8 ToLower() {
+            if (value >= 65) {
+                if (value <= 90) {
+                    ret value + 32;
+                }
+            }
+            ret value;
+        }
+
+        I16 ToInt() {
+            ret value;
+        }
+
+        I8 Equals(U8 other) {
+            if (value == other) {
+                ret 1;
+            }
+            ret 0;
+        }
+    }
+}

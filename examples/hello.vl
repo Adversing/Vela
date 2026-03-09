@@ -1,0 +1,7 @@
+module hello {
+    U0 main() {
+        I16 x = 42;
+        Print(x);
+        ret;
+    }
+}

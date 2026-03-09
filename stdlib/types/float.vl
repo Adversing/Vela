@@ -1,0 +1,78 @@
+module float {
+    class Float {
+        [[get, visible]] F16 value;
+
+        OnAlloc(F16 val) {
+            value = val;
+        }
+
+        I8 IsPositive() {
+            if (value > 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsNegative() {
+            if (value < 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsZero() {
+            if (value == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        F16 Abs() {
+            if (value < 0) {
+                ret 0 - value;
+            }
+            ret value;
+        }
+
+        F16 Negate() {
+            ret 0 - value;
+        }
+
+        F16 Add(F16 other) {
+            ret value + other;
+        }
+
+        F16 Sub(F16 other) {
+            ret value - other;
+        }
+
+        F16 Mul(F16 other) {
+            ret value * other;
+        }
+
+        F16 Div(F16 other) {
+            ret value / other;
+        }
+
+        I8 Equals(F16 other) {
+            if (value == other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 GreaterThan(F16 other) {
+            if (value > other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 LessThan(F16 other) {
+            if (value < other) {
+                ret 1;
+            }
+            ret 0;
+        }
+    }
+}

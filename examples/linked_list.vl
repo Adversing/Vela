@@ -1,0 +1,26 @@
+module linked_list {
+    class Node {
+        [[get, visible]] I16 value;
+        Ptr<Node> next;
+
+        OnAlloc(I16 val) {
+            value = val;
+            next = null;
+        }
+
+        I16 getValue() {
+            ret value;
+        }
+    }
+
+    I16 main() {
+        Ptr<Node> head = Init<Node>(val: 10);
+        Ptr<Node> second = Init<Node>(val: 20);
+
+        I16 sum = 10 + 20;
+        Print(sum);
+        Free(second);
+        Free(head);
+        ret sum;
+    }
+}

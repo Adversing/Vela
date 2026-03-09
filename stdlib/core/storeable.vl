@@ -1,0 +1,38 @@
+module storeable {
+    class Storeable {
+        OnAlloc() {}
+        OnFree {}
+
+        I16 GetSize() {
+            I16 result = 0;
+            ASM(
+                [[in]] R0 = this;
+                [[out]] R0 = result;
+            ) {
+                MOVM R1, [R0]
+                MOVM R0, [R1]
+            }
+            ret result;
+        }
+
+        I16 Pointer() {
+            I16 result = 0;
+            ASM(
+                [[in]] R0 = this;
+                [[out]] R0 = result;
+            ) {
+            }
+            ret result;
+        }
+
+        I16 Reference() {
+            I16 result = 0;
+            ASM(
+                [[in]] R0 = this;
+                [[out]] R0 = result;
+            ) {
+            }
+            ret result;
+        }
+    }
+}

@@ -1,0 +1,62 @@
+module string {
+    class String {
+        [[get, visible]] I16 ptr;
+        [[get, visible]] I16 len;
+
+        OnAlloc(I16 p, I16 length) {
+            ptr = p;
+            len = length;
+        }
+
+        I8 IsEmpty() {
+            if (len == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        U8 CharAt(I16 index) {
+            ret ptr[index];
+        }
+
+        I8 Equals(I16 otherPtr, I16 otherLen) {
+            if (len != otherLen) {
+                ret 0;
+            }
+            I16 i = 0;
+            while (i < len) {
+                U8 a = ptr[i];
+                U8 b = otherPtr[i];
+                if (a != b) {
+                    ret 0;
+                }
+                i = i + 1;
+            }
+            ret 1;
+        }
+
+        I8 Contains(U8 ch) {
+            I16 i = 0;
+            while (i < len) {
+                U8 c = ptr[i];
+                if (c == ch) {
+                    ret 1;
+                }
+                i = i + 1;
+            }
+            ret 0;
+        }
+
+        I16 IndexOf(U8 ch) {
+            I16 i = 0;
+            while (i < len) {
+                U8 c = ptr[i];
+                if (c == ch) {
+                    ret i;
+                }
+                i = i + 1;
+            }
+            ret 0 - 1;
+        }
+    }
+}

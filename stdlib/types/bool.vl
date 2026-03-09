@@ -1,0 +1,56 @@
+module bool {
+    class Bool {
+        [[get, visible]] I8 value;
+
+        OnAlloc(I8 val) {
+            value = val;
+        }
+
+        I8 Not() {
+            if (value == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 And(I8 other) {
+            if (value != 0) {
+                if (other != 0) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
+        I8 Or(I8 other) {
+            if (value != 0) {
+                ret 1;
+            }
+            if (other != 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 Xor(I8 other) {
+            if (value != other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I16 ToInt() {
+            if (value != 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 Equals(I8 other) {
+            if (value == other) {
+                ret 1;
+            }
+            ret 0;
+        }
+    }
+}

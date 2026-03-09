@@ -1,0 +1,52 @@
+module math {
+    I16 Abs(I16 x) {
+        if (x < 0) {
+            ret 0 - x;
+        }
+        ret x;
+    }
+
+    I16 Min(I16 a, I16 b) {
+        if (a < b) {
+            ret a;
+        }
+        ret b;
+    }
+
+    I16 Max(I16 a, I16 b) {
+        if (a > b) {
+            ret a;
+        }
+        ret b;
+    }
+
+    I16 Clamp(I16 x, I16 lo, I16 hi) {
+        if (x < lo) {
+            ret lo;
+        }
+        if (x > hi) {
+            ret hi;
+        }
+        ret x;
+    }
+
+    I16 Pow(I16 base, I16 exp) {
+        I16 result = 1;
+        I16 i = 0;
+        while (i < exp) {
+            result = result * base;
+            i = i + 1;
+        }
+        ret result;
+    }
+
+    I16 Sign(I16 x) {
+        if (x > 0) {
+            ret 1;
+        }
+        if (x < 0) {
+            ret 0 - 1;
+        }
+        ret 0;
+    }
+}

@@ -1,0 +1,14 @@
+module factorial {
+    I16 factorial(I16 n) {
+        if (n <= 1) {
+            ret 1;
+        }
+        ret n * factorial(n - 1);
+    }
+
+    I16 main() {
+        I16 result = factorial(5);
+        Print(result);
+        ret result;
+    }
+}

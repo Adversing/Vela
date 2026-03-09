@@ -1,0 +1,52 @@
+module polymorphism {
+    type Drawable {
+        skeleton U0 draw();
+        skeleton I16 getArea();
+    }
+
+    class Circle : Drawable {
+        I16 radius;
+
+        OnAlloc(I16 r) {
+            radius = r;
+        }
+
+        U0 draw() {
+            Print(radius);
+            ret;
+        }
+
+        I16 getArea() {
+            ret radius * radius * 3;
+        }
+    }
+
+    class Square : Drawable {
+        I16 side;
+
+        OnAlloc(I16 s) {
+            side = s;
+        }
+
+        U0 draw() {
+            Print(side);
+            ret;
+        }
+
+        I16 getArea() {
+            ret side * side;
+        }
+    }
+
+    I16 main() {
+        Ptr<Circle> c = Init<Circle>(r: 5);
+        Ptr<Square> s = Init<Square>(s: 4);
+        I16 area1 = c.getArea();
+        I16 area2 = s.getArea();
+        I16 total = area1 + area2;
+        Print(total);
+        Free(c);
+        Free(s);
+        ret total;
+    }
+}

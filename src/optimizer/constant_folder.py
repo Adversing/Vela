@@ -9,6 +9,13 @@ def constant_fold(instrs: list[IRInstr]) -> list[IRInstr]:
     result: list[IRInstr] = []
 
     for instr in instrs:
+        # labels are join points: values from different branches converge,
+        # so we cannot trust any previously-known constants.
+        if instr.op == IROp.LABEL:
+            known.clear()
+            result.append(instr)
+            continue
+
         if instr.op == IROp.CONST and instr.dest:
             known[instr.dest] = instr.imm
             result.append(instr)
@@ -40,13 +47,15 @@ def constant_fold(instrs: list[IRInstr]) -> list[IRInstr]:
                         )
                     continue
 
-        # MOV propagation: if src is a known constant, replace
-        if instr.op == IROp.MOV and instr.src1 in known and instr.dest:
-            known[instr.dest] = known[instr.src1]
-
-        # invalidate dest
-        if instr.dest and instr.op not in (IROp.CONST, IROp.FCONST):
-            if instr.dest in known and instr.op != IROp.MOV:
+        # MOV propagation or invalidation
+        if instr.op == IROp.MOV and instr.dest:
+            if instr.src1 in known:
+                known[instr.dest] = known[instr.src1]
+            elif instr.dest in known:
+                del known[instr.dest]
+        # invalidate dest for other writes
+        elif instr.dest and instr.op not in (IROp.CONST, IROp.FCONST):
+            if instr.dest in known:
                 del known[instr.dest]
 
         result.append(instr)

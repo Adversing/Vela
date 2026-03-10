@@ -397,11 +397,15 @@ class AsmEmitter:
 
         elif op == IROp.VCALL:
             # virtual dispatch: load target from vtable
-            obj = reg(instr.src1)
+            # always use R0 for vtable lookup: the obj pointer is placed
+            # into R0 by PARAM(obj, imm=0) before VCALL. Using
+            # reg(instr.src1) would read a potentially clobbered register
+            # when 2+ PARAM instructions have shuffled arguments into
+            # R1/R2/R3 after the obj->R0 move.
             slot = instr.imm if instr.imm is not None else 0
             # vtable offset: 2 (size) + 2 (OnFree) + slot * 2
             offset = 4 + int(slot) * 2
-            lines.append(f"    MOVM R12, [{obj}]")
+            lines.append(f"    MOVM R12, [R0]")
             if offset > 0:
                 lines.append(f"    ADD R12, R12, V{offset}")
             lines.append(f"    MOVM R12, [R12]")

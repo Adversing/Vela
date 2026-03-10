@@ -1,0 +1,34 @@
+module boxed_values {
+    import stdlib::types::{int};
+    import stdlib::types::{bool};
+
+    I16 main() {
+        Int x = -42;
+        I16 abs_x = x.Abs();
+        Print(abs_x);
+
+        Int a = 10;
+        I16 sum = a.Add(25);
+        Print(sum);
+
+        Int zero = 0;
+        I8 is_z = zero.IsZero();
+        Print(is_z);
+
+        Int p = 7;
+        I16 bigger = p.MaxWith(15);
+        Print(bigger);
+
+        Int val = 100;
+        I16 clamped = val.Clamp(0, 50);
+        Print(clamped);
+
+        Bool flag = 1;
+        I8 inv = flag.Not();
+        Print(inv);
+
+        I16 total = abs_x + sum + is_z + bigger + clamped + inv;
+        Print(total);
+        ret total;
+    }
+}

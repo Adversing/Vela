@@ -4,23 +4,10 @@ from src.parser.ast_nodes import *
 from src.ir.instructions import IROp, IRInstr
 from src.ir.virtual_register import VirtualRegisterAllocator
 from src.semantic.types import (
-    VelaType, FloatType, IntType, PtrType_, BoolType, VoidType,
+    VelaType, FloatType, IntType, PtrType_, BoolType, VoidType, ClassType,
     I8, U8, I16, U16, F16,
 )
 from src.semantic.type_checker import TypeChecker
-
-# maps primitive VelaType instances to their stdlib wrapper class names.
-# When a method call is made on a variable of one of these types, the
-# compiler auto-boxes into a temporary wrapper object.
-# I might change this to directly wrapping the values to the corresponding class type in the future.
-WRAPPER_BINDINGS: dict[VelaType, str] = {
-    I16:  "Int",
-    U16:  "Int",
-    I8:   "Bool", # change this to U8
-    U8:   "Char",
-    F16:  "Float",
-}
-
 
 class IRBuilder:
     """Lowers a type-checked AST into a list of IR instructions per function."""
@@ -213,7 +200,20 @@ class IRBuilder:
         self._local_types[stmt.name] = ty
         if stmt.initializer:
             val = self._build_expr(stmt.initializer)
-            self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=val))
+            # auto-box: if declared type is Ptr<ClassType> (e.g. `Int x = -42`)
+            # and the class is a known wrapper, auto-box the primitive value
+            if (isinstance(ty, PtrType_)
+                    and isinstance(ty.inner, ClassType)
+                    and ty.inner.name in self._tc.vtables):
+                init_type = getattr(stmt.initializer, 'inferred_type', None)
+                # only auto-box if the initializer is a primitive (not already a pointer)
+                if init_type and not isinstance(init_type, PtrType_):
+                    boxed = self._autobox(val, ty.inner.name)
+                    self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=boxed))
+                else:
+                    self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=val))
+            else:
+                self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=val))
         else:
             self._emit(IRInstr(op=IROp.CONST, dest=vr, imm=0))
 
@@ -618,27 +618,19 @@ class IRBuilder:
 
         obj_type = getattr(expr.obj, 'inferred_type', None)
 
-        # auto-boxing: if method is called on a primitive type, box it into the wrapper class
-        wrapper_cls = None
-        boxed_tmp = None
-        if obj_type in WRAPPER_BINDINGS:
-            wrapper_cls = WRAPPER_BINDINGS[obj_type]
-            if wrapper_cls in self._tc.vtables:
-                boxed_tmp = self._autobox(obj_reg, wrapper_cls)
-                obj_reg = boxed_tmp
-
         # pass 'this' as first arg
         self._emit(IRInstr(op=IROp.PARAM, src1=obj_reg, imm=0))
         for i, a in enumerate(args):
             self._emit(IRInstr(op=IROp.PARAM, src1=a, imm=i + 1))
 
         r = self._tmp()
-        cls_name = wrapper_cls
-        if cls_name is None:
-            if isinstance(obj_type, PtrType_):
-                inner = obj_type.inner
-                if hasattr(inner, 'name'):
-                    cls_name = inner.name
+        cls_name = None
+        if isinstance(obj_type, PtrType_):
+            inner = obj_type.inner
+            if hasattr(inner, 'name'):
+                cls_name = inner.name
+        elif isinstance(obj_type, ClassType):
+            cls_name = obj_type.name
 
         # virtual dispatch if vtable has a slot for this method
         if cls_name and cls_name in self._tc.vtables:
@@ -648,15 +640,11 @@ class IRBuilder:
                 self._emit(IRInstr(op=IROp.VCALL, dest=r, src1=obj_reg,
                                    label=expr.method, imm=slot,
                                    arg_count=len(args) + 1))
-                if boxed_tmp is not None:
-                    self._autofree(boxed_tmp)
                 return r
 
         # static call fallback
         mangled = f"{cls_name}_{expr.method}" if cls_name else expr.method
         self._emit(IRInstr(op=IROp.CALL, dest=r, label=mangled, arg_count=len(args) + 1))
-        if boxed_tmp is not None:
-            self._autofree(boxed_tmp)
         return r
 
     def _autobox(self, val_reg: str, wrapper_cls: str) -> str:

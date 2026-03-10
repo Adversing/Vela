@@ -59,8 +59,11 @@ Vela/
 │   │   └── virtual_register.py   # Virtual register allocation
 │   ├── optimizer/                # IR and ASM optimization passes
 │   │   ├── constant_folder.py
-│   │   ├── dead_code.py
 │   │   ├── strength_reduction.py
+│   │   ├── dead_code.py
+│   │   ├── devirtualizer.py      # VCALL -> CALL when type is statically known
+│   │   ├── inliner.py            # Inline small functions (≤32 instrs)
+│   │   ├── escape_analysis.py    # SROA: heap allocs -> scalar registers
 │   │   └── peephole.py           # ASM-level peephole optimizer
 │   └── codegen/                  # Assembly code emission
 │       ├── asm_emitter.py        # Main code emitter
@@ -85,12 +88,15 @@ Vela/
 │   ├── hello.vl
 │   ├── factorial.vl
 │   ├── polymorphism.vl
-│   └── linked_list.vl
+│   ├── linked_list.vl
+│   └── boxed_values.vl           # Boxed wrapper tests (Int, Bool)
 ├── tests/                        # Pytest test suite
 │   ├── test_lexer.py
 │   ├── test_parser.py
 │   ├── test_semantic.py
-│   └── test_integration.py
+│   ├── test_integration.py
+│   ├── test_compiler.py
+│   └── test_autobox_optimizer.py # Devirtualizer, inliner, escape analysis tests
 └── pyproject.toml
 ```
 
@@ -182,23 +188,32 @@ class Point {
 
 The compiler emits an error if you define a method that conflicts with a tag-generated accessor.
 
-### Auto-Boxing
+### Boxed Types
 
-Primitive values are automatically boxed into stdlib wrapper classes when calling methods:
+Methods and field access are only available on **boxed wrapper types**, not on bare primitives. Using a class name as a variable type (e.g. `Int x = 42`) declares a heap-allocated wrapper that auto-boxes the primitive value:
 
 ```vl
-Int x = 42;
-x.Abs();         // Auto-boxes x into Int, calls Int.Abs()
-x.IsPositive();  // Auto-boxes x into Int, calls Int.IsPositive()
+Int x = 42;          // Auto-boxes 42 into a heap-allocated Int wrapper
+x.Abs();             // ✅ Works: Int has method Abs()
+x.IsPositive();      // ✅ Works: Int has method IsPositive()
+Free(x);             // Free the wrapper when done
 
-Char c = 65;
-c.IsAlpha();     // Auto-boxes c into Char
-
-Float f = 3.14;
-f.Negate();      // Auto-boxes f into Float
+I16 y = 42;
+y.Abs();             // ❌ Error: primitive type 'I16' has no methods;
+                     //    use the boxed type 'Int' instead
 ```
 
-**Boxing mapping**: `I16`/`U16` → `Int`, `I8` → `Bool`, `U8` → `Char`, `F16` → `Float`
+The same applies to all wrapper types:
+
+```vl
+Bool flag = 1;       // Auto-boxes into Bool
+flag.Not();          // ✅ Works
+
+Float f = 3.14;      // Auto-boxes into Float
+f.Negate();          // ✅ Works
+```
+
+> **Note**: The compiler's optimizer (devirtualizer -> inliner -> escape analysis) can eliminate the boxing overhead entirely, replacing heap allocations with scalar register operations.
 
 ### Memory Management
 
@@ -219,7 +234,7 @@ import stdlib::types::{*};                   // Wildcard: import all from packag
 import stdlib::math::{*};                    // Math utilities
 ```
 
-Resolution: `import pkg::sub::{mod}` → `<project_root>/pkg/sub/mod.vl`
+Resolution: `import pkg::sub::{mod}` -> `<project_root>/pkg/sub/mod.vl`
 
 `Storeable` from `stdlib/core/` is auto-imported into every compilation unit.
 
@@ -306,12 +321,13 @@ Source (.vl)
   +-- Parser ----------- Recursive-descent -> AST
   |
   +-- Semantic Analysis  Type checking, symbol resolution, import loading,
-  |                      vtable construction, tag expansion
+  |                      vtable construction, tag expansion,
+  |                      boxed-type enforcement (reject methods on primitives)
   |
   +-- IR Generation ---- AST -> three-address code (85+ IR operation types)
   |
-  +-- Optimizer -------- Constant folding, strength reduction,
-  |                      dead code elimination
+  +-- Optimizer -------- constant_fold -> strength_reduce -> devirtualize ->
+  |                      inline -> constant_fold -> escape_analyze -> DCE
   |
   +-- Code Generation -- IR -> assembly with register allocation,
   |                      calling convention, memory layout
@@ -387,6 +403,15 @@ Replaces expensive operations with cheaper equivalents:
 - `x / 8` -> `x >> 3`
 - `x * 0` -> `0`, `x + 0` -> `x`, `x * 1` -> `x`
 
+### Devirtualization
+Rewrites virtual calls (`VCALL`) to direct calls (`CALL`) when the receiver's concrete type can be statically inferred from the `__malloc` + vtable-store pattern.
+
+### Function Inlining
+Inlines non-recursive functions with ≤32 instructions at their call sites, renaming registers and labels to avoid conflicts.
+
+### Escape Analysis + SROA
+Identifies heap-allocated objects whose pointers do not escape the current function. For non-escaping objects, replaces field loads/stores with scalar register operations and eliminates the associated `__malloc`/`__free` calls. This is the key pass that eliminates auto-boxing overhead.
+
 ### Dead Code Elimination
 Removes assignments whose results are never read.
 
@@ -438,12 +463,15 @@ Manual memory management with `Init<>` / `Free()`, pointer-based linked list tra
 
 Simulator result: **R0 = 30** ✓
 
+### boxed_values.vl
+Tests auto-boxing with boxed wrapper types across `Int` (Abs, Add, IsZero, MaxWith, Clamp) and `Bool` (Not). Demonstrates that the optimizer eliminates all heap allocations - the generated `.de1` contains zero `__malloc`/`__free` calls in the main function body.
+
 ---
 
 ## Testing
 
 ```bash
-# Run all tests (264 tests)
+# Run all tests (284 tests)
 pytest tests/
 
 # Run specific test module
@@ -451,6 +479,7 @@ pytest tests/test_lexer.py -v
 pytest tests/test_parser.py -v
 pytest tests/test_semantic.py -v
 pytest tests/test_integration.py -v
+pytest tests/test_autobox_optimizer.py -v
 ```
 
-Test modules cover: tokenization, AST construction, type checking, inheritance validation, import resolution, and end-to-end compilation.
+Test modules cover: tokenization, AST construction, type checking, inheritance validation, import resolution, end-to-end compilation, and auto-boxing optimizer passes (devirtualization, inlining, escape analysis).

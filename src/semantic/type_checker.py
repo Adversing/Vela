@@ -11,6 +11,15 @@ from src.semantic.scope import ScopeStack, Symbol
 from src.semantic.inheritance import InheritanceResolver, VtableInfo
 from src.semantic.tag_processor import process_tags
 
+_PRIMITIVE_TO_BOXED: dict[VelaType, str] = {
+    I16:  "Int",
+    U16:  "Int",
+    I8:   "Int",       # I8 is IntType(8, signed=True); Bool literal has BoolType
+    U8:   "Char",
+    F16:  "Float",
+    BOOL: "Bool",
+}
+
 
 class TypeChecker:
     """Single-pass type checker and name resolver."""
@@ -307,13 +316,50 @@ class TypeChecker:
             expr.inferred_type = I16
             return I16
         if isinstance(expr, MethodCallExpr):
-            self._check_expr(expr.obj)
+            obj_type = self._check_expr(expr.obj)
             for a in expr.args:
                 self._check_expr(a)
+            # reject method calls on bare primitive types
+            actual = obj_type
+            if isinstance(actual, PtrType_):
+                actual = actual.inner
+            if actual in _PRIMITIVE_TO_BOXED:
+                boxed = _PRIMITIVE_TO_BOXED[actual]
+                raise SemanticError(
+                    f"primitive type '{actual}' has no methods; "
+                    f"use the boxed type '{boxed}' instead",
+                    getattr(expr, 'location', None),
+                )
+            # resolve return type from class methods if possible
+            cls_type = None
+            if isinstance(obj_type, PtrType_) and isinstance(obj_type.inner, ClassType):
+                cls_type = obj_type.inner
+            elif isinstance(obj_type, ClassType):
+                cls_type = obj_type
+            if cls_type:
+                # look up method return type from class declaration
+                cls_decl = self.class_decls.get(cls_type.name)
+                if cls_decl:
+                    for m in cls_decl.methods:
+                        if m.name == expr.method:
+                            ret = self._resolve_type(m.return_type)
+                            expr.inferred_type = ret
+                            return ret
             expr.inferred_type = I16
             return I16
         if isinstance(expr, FieldAccessExpr):
             ot = self._check_expr(expr.obj)
+            # reject field access on bare primitive types
+            actual = ot
+            if isinstance(actual, PtrType_):
+                actual = actual.inner
+            if actual in _PRIMITIVE_TO_BOXED:
+                boxed = _PRIMITIVE_TO_BOXED[actual]
+                raise SemanticError(
+                    f"primitive type '{actual}' has no fields; "
+                    f"use the boxed type '{boxed}' instead",
+                    getattr(expr, 'location', None),
+                )
             expr.inferred_type = I16
             if isinstance(ot, PtrType_) and isinstance(ot.inner, ClassType):
                 for fn, ft in ot.inner.fields:
@@ -373,11 +419,13 @@ class TypeChecker:
             if texpr.name in PRIMITIVE_MAP:
                 return PRIMITIVE_MAP[texpr.name]
             if texpr.name in self.class_types:
-                return self.class_types[texpr.name]
+                return PtrType_(inner=self.class_types[texpr.name])
             # forward reference - return placeholder
             return I16
         if isinstance(texpr, PtrType):
             inner = self._resolve_type(texpr.inner)
+            if isinstance(inner, PtrType_) and isinstance(inner.inner, ClassType):
+                inner = inner.inner
             return PtrType_(inner=inner)
         return I16
 

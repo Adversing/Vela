@@ -262,6 +262,39 @@ class TestSemanticErrors:
                 I16 main() { ret 0; }
             """)
 
+    def test_method_on_bare_i16_rejected(self):
+        """Calling a method on a bare I16 should produce a SemanticError."""
+        with pytest.raises(SemanticError, match="primitive type 'I16' has no methods"):
+            check_module("""
+                class Int {
+                    I16 value;
+                    OnAlloc(I16 v) { value = v; }
+                    I16 Abs() { ret value; }
+                }
+                I16 main() { I16 x = 42; ret x.Abs(); }
+            """)
+
+    def test_method_on_bare_f16_rejected(self):
+        with pytest.raises(SemanticError, match="primitive type.*has no methods"):
+            check_module("""
+                class Float {
+                    F16 value;
+                    OnAlloc(F16 v) { value = v; }
+                    F16 Abs() { ret value; }
+                }
+                I16 main() { F16 x = 3.14; F16 y = x.Abs(); ret 0; }
+            """)
+
+    def test_field_on_bare_i16_rejected(self):
+        with pytest.raises(SemanticError, match="primitive type 'I16' has no fields"):
+            check_module("""
+                class Int {
+                    I16 value;
+                    OnAlloc(I16 v) { value = v; }
+                }
+                I16 main() { I16 x = 42; ret x.value; }
+            """)
+
 
 class TestTypeCompatibility:
     def test_same_type_compatible(self):

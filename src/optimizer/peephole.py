@@ -157,9 +157,10 @@ def _is_dead_after(lines: list[str], after_idx: int, reg: str,
             continue
         op = m.group(1)
 
-        # unconditional branch; control leaves, reg is dead on this path.
+        # unconditional branch; control goes to a potentially distant label
+        # where *reg* may still be live.  Be conservative.
         if re.match(r'^B\s+\w+$', stripped):
-            return True
+            return False
 
         # return - end of function.
         if 'MOV PC' in stripped:

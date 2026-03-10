@@ -12,6 +12,9 @@ from src.ir.builder import IRBuilder
 from src.optimizer.constant_folder import constant_fold
 from src.optimizer.dead_code import eliminate_dead_code
 from src.optimizer.strength_reduction import strength_reduce
+from src.optimizer.devirtualizer import devirtualize
+from src.optimizer.inliner import inline_functions
+from src.optimizer.escape_analysis import escape_analyze
 from src.codegen.asm_emitter import AsmEmitter
 from src.errors import VelaError
 
@@ -50,11 +53,20 @@ def compile_source(source: str, filename: str = "<stdin>",
     builder = IRBuilder(checker)
     func_ir = builder.build(ast)
 
-    # optimize each function
     for name in func_ir:
         ir = func_ir[name]
         ir = constant_fold(ir)
         ir = strength_reduce(ir)
+        ir = devirtualize(ir, checker.vtables)
+        func_ir[name] = ir
+
+    inline_bodies = {n: list(body) for n, body in func_ir.items()}
+
+    for name in func_ir:
+        ir = func_ir[name]
+        ir = inline_functions(ir, inline_bodies)
+        ir = constant_fold(ir) # re-fold after inlining
+        ir = escape_analyze(ir)
         ir = eliminate_dead_code(ir)
         func_ir[name] = ir
 

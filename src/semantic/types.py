@@ -77,11 +77,14 @@ class PtrType_(VelaType):
 
 @dataclass(frozen=True)
 class BoolType(VelaType):
+    """Distinct boolean type.  Same runtime footprint as U8 but NOT
+    implicitly convertible to/from any integer type."""
+
     def size(self) -> int:
         return 1
 
     def is_numeric(self) -> bool:
-        return True
+        return False
 
     def __str__(self) -> str:
         return "Bool"
@@ -129,6 +132,17 @@ PRIMITIVE_MAP: dict[str, VelaType] = {
 }
 
 
+def is_bool_like(ty: VelaType) -> bool:
+    """True for internal BoolType *and* the stdlib Bool class (Ptr<Bool>)."""
+    if isinstance(ty, BoolType):
+        return True
+    if isinstance(ty, PtrType_) and isinstance(ty.inner, ClassType):
+        return ty.inner.name == "Bool"
+    if isinstance(ty, ClassType):
+        return ty.name == "Bool"
+    return False
+
+
 def types_compatible(target: VelaType, source: VelaType) -> bool:
     """Check if source can be assigned to target."""
     if target == source:
@@ -143,11 +157,6 @@ def types_compatible(target: VelaType, source: VelaType) -> bool:
         if isinstance(target.inner, VoidType) or isinstance(source.inner, VoidType):
             return True
         return target.inner == source.inner
-    # Bool from int
-    if isinstance(target, BoolType) and isinstance(source, IntType):
-        return True
-    if isinstance(target, IntType) and isinstance(source, BoolType):
-        return True
     # Null to any pointer
     if isinstance(target, PtrType_) and source == NULL_PTR:
         return True

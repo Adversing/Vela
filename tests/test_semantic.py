@@ -316,10 +316,15 @@ class TestTypeCompatibility:
         assert types_compatible(PtrType_(inner=I16), NULL_PTR) is True
 
     def test_bool_from_int(self):
-        assert types_compatible(BOOL, I16) is True
+        # Bool is NOT implicitly convertible from integers
+        assert types_compatible(BOOL, I16) is False
 
     def test_int_from_bool(self):
-        assert types_compatible(I16, BOOL) is True
+        # Bool is NOT implicitly convertible to integers
+        assert types_compatible(I16, BOOL) is False
+
+    def test_bool_self_compatible(self):
+        assert types_compatible(BOOL, BOOL) is True
 
     def test_different_ptr_incompatible(self):
         assert types_compatible(PtrType_(inner=I16), PtrType_(inner=U8)) is False

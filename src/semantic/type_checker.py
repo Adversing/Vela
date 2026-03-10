@@ -5,7 +5,7 @@ from src.parser.ast_nodes import *
 from src.semantic.types import (
     VelaType, VoidType, IntType, FloatType, PtrType_, BoolType,
     ClassType, TypeDeclType, U0, U8, I8, U16, I16, F16, BOOL, NULL_PTR,
-    PRIMITIVE_MAP, types_compatible,
+    PRIMITIVE_MAP, types_compatible, is_bool_like,
 )
 from src.semantic.scope import ScopeStack, Symbol
 from src.semantic.inheritance import InheritanceResolver, VtableInfo
@@ -212,16 +212,46 @@ class TypeChecker:
         if isinstance(stmt, VarDecl):
             ty = self._resolve_type(stmt.type_expr)
             if stmt.initializer:
-                self._check_expr(stmt.initializer)
+                init_ty = self._check_expr(stmt.initializer)
+                # Bool class / BoolType variables: only accept Bool-like sources
+                if is_bool_like(ty) and not is_bool_like(init_ty):
+                    raise SemanticError(
+                        f"cannot initialise Bool from {init_ty}; "
+                        "use true, false, or a comparison",
+                        getattr(stmt.initializer, "location", None),
+                    )
+                # Prevent leaking BoolType into non-Bool targets
+                if isinstance(init_ty, BoolType) and not is_bool_like(ty):
+                    raise SemanticError(
+                        f"cannot assign Bool to {ty}",
+                        getattr(stmt.initializer, "location", None),
+                    )
             self.scopes.define(stmt.name, Symbol(name=stmt.name, type=ty, kind="var"))
         elif isinstance(stmt, Assignment):
-            self._check_expr(stmt.target)
-            self._check_expr(stmt.value)
+            target_ty = self._check_expr(stmt.target)
+            value_ty = self._check_expr(stmt.value)
+            if is_bool_like(target_ty) and not is_bool_like(value_ty):
+                raise SemanticError(
+                    f"cannot assign {value_ty} to Bool; "
+                    "use true, false, or a comparison",
+                    getattr(stmt.value, "location", None),
+                )
+            if isinstance(value_ty, BoolType) and not is_bool_like(target_ty):
+                raise SemanticError(
+                    f"cannot assign Bool to {target_ty}",
+                    getattr(stmt.value, "location", None),
+                )
         elif isinstance(stmt, ReturnStmt):
             if stmt.value:
                 self._check_expr(stmt.value)
         elif isinstance(stmt, IfStmt):
-            self._check_expr(stmt.condition)
+            cond_ty = self._check_expr(stmt.condition)
+            if not is_bool_like(cond_ty):
+                raise SemanticError(
+                    f"if condition must be Bool, got {cond_ty}; "
+                    "use a comparison (e.g. x != 0)",
+                    getattr(stmt.condition, "location", None),
+                )
             for s in stmt.then_body:
                 self._check_stmt(s)
             for s in stmt.else_body:
@@ -231,14 +261,26 @@ class TypeChecker:
             if stmt.init:
                 self._check_stmt(stmt.init)
             if stmt.condition:
-                self._check_expr(stmt.condition)
+                cond_ty = self._check_expr(stmt.condition)
+                if not is_bool_like(cond_ty):
+                    raise SemanticError(
+                        f"for condition must be Bool, got {cond_ty}; "
+                        "use a comparison (e.g. i < n)",
+                        getattr(stmt.condition, "location", None),
+                    )
             if stmt.update:
                 self._check_stmt(stmt.update)
             for s in stmt.body:
                 self._check_stmt(s)
             self.scopes.pop()
         elif isinstance(stmt, WhileStmt):
-            self._check_expr(stmt.condition)
+            cond_ty = self._check_expr(stmt.condition)
+            if not is_bool_like(cond_ty):
+                raise SemanticError(
+                    f"while condition must be Bool, got {cond_ty}; "
+                    "use a comparison (e.g. x != 0)",
+                    getattr(stmt.condition, "location", None),
+                )
             for s in stmt.body:
                 self._check_stmt(s)
         elif isinstance(stmt, ExprStmt):
@@ -288,6 +330,16 @@ class TypeChecker:
             if expr.op in ("==", "!=", "<", ">", "<=", ">="):
                 expr.inferred_type = BOOL
             elif expr.op in ("&&", "||"):
+                if not is_bool_like(lt):
+                    raise SemanticError(
+                        f"left operand of '{expr.op}' must be Bool, got {lt}",
+                        getattr(expr.left, "location", None),
+                    )
+                if not is_bool_like(rt):
+                    raise SemanticError(
+                        f"right operand of '{expr.op}' must be Bool, got {rt}",
+                        getattr(expr.right, "location", None),
+                    )
                 expr.inferred_type = BOOL
             elif isinstance(lt, FloatType) or isinstance(rt, FloatType):
                 expr.inferred_type = F16
@@ -299,6 +351,11 @@ class TypeChecker:
         if isinstance(expr, UnaryExpr):
             ot = self._check_expr(expr.operand)
             if expr.op == "!":
+                if not is_bool_like(ot):
+                    raise SemanticError(
+                        f"operand of '!' must be Bool, got {ot}",
+                        getattr(expr.operand, "location", None),
+                    )
                 expr.inferred_type = BOOL
             elif expr.op in ("post++", "post--"):
                 expr.inferred_type = ot

@@ -77,6 +77,17 @@ class IRBuilder:
             offset += max(ty.size(), 2)  # min 2 bytes per field
         return 2
 
+    def _class_field_offset(self, cls_name: str, field_name: str) -> int:
+        """Compute field byte offset for any class by name."""
+        ct = self._tc.class_types.get(cls_name)
+        if ct and hasattr(ct, 'fields'):
+            offset = 2  # skip vtable pointer
+            for fn, ft in ct.fields:
+                if fn == field_name:
+                    return offset
+                offset += max(ft.size(), 2)
+        return 2  # fallback: right after vtable ptr
+
     def _emit_field_load(self, field_name: str) -> str:
         """Emit IR for loading self.field_name, return result register."""
         self_reg = self._locals["self"]
@@ -378,6 +389,22 @@ class IRBuilder:
             return
         # general expression: compare to 0
         val = self._build_expr(expr)
+        # If the expression is a Bool class instance, load .value field
+        inferred = getattr(expr, 'inferred_type', None)
+        if (isinstance(inferred, PtrType_) and isinstance(inferred.inner, ClassType)
+                and inferred.inner.name == "Bool"):
+            # value is at field offset within the Bool object
+            offset = self._class_field_offset("Bool", "value")
+            r = self._tmp()
+            if offset == 0:
+                self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=val))
+            else:
+                addr = self._tmp()
+                off_r = self._tmp()
+                self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
+                self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=val, src2=off_r))
+                self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
+            val = r
         zero = self._tmp()
         self._emit(IRInstr(op=IROp.CONST, dest=zero, imm=0))
         self._emit(IRInstr(op=IROp.CMP, src1=val, src2=zero))

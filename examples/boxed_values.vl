@@ -23,7 +23,7 @@ module boxed_values {
         I16 clamped = val.Clamp(0, 50);
         Print(clamped);
 
-        Bool flag = 1;
+        Bool flag = true;
         I8 inv = flag.Not();
         Print(inv);
 

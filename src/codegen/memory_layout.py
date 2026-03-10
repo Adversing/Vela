@@ -16,7 +16,7 @@ class DataEntry:
 
 
 class MemoryLayout:
-    """Builds the `space:` data section for the output .asm file."""
+    """Builds the `space:` data section for the output .de1 file."""
 
     def __init__(self, checker: TypeChecker) -> None:
         self._tc = checker

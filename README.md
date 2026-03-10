@@ -1,6 +1,6 @@
 # Vela ⛵️
 
-**Vela** is a statically-typed, compiled programming language targeting a custom 16-bit ARM-like CPU architecture. It is a companion project to the [DE1 CPU ISA](https://github.com/tonnoBelloSnello/CPU) - Vela compiles `.vl` source files into `.asm` assembly that the CPU's encoder assembles into machine code for simulation on the Verilog hardware model.
+**Vela** is a statically-typed, compiled programming language targeting a custom 16-bit ARM-like CPU architecture. It is a companion project to the [DE1 CPU ISA](https://github.com/tonnoBelloSnello/CPU) - Vela compiles `.vl` source files into `.de1` assembly that the CPU's encoder assembles into machine code for simulation on the Verilog hardware model.
 
 ## Table of Contents
 
@@ -22,14 +22,14 @@
 
 ```bash
 # Compile a Vela program
-python -m src.main examples/hello.vl -o examples/hello.asm
+python -m src.main examples/hello.vl -o examples/hello.de1
 
 # Run the generated assembly on the CPU simulator (requires DE1 CPU project)
 cd ../CPU
-python run.py ../Vela/examples/hello.asm
+python run.py ../Vela/examples/hello.de1
 ```
 
-**Output on success**: `[velac] Compiled examples/hello.vl -> examples/hello.asm`
+**Output on success**: `[velac] Compiled examples/hello.vl -> examples/hello.de1`
 
 ---
 
@@ -81,7 +81,7 @@ Vela/
 │   │   ├── matrix.vl             # 2D matrix (uses native ISA ops)
 │   │   └── null.vl               # NULL alias
 │   └── math.vl                   # Math utilities (Abs, Min, Max, Pow, ...)
-├── examples/                     # Sample programs with compiled .asm output
+├── examples/                     # Sample programs with compiled .de1 output
 │   ├── hello.vl
 │   ├── factorial.vl
 │   ├── polymorphism.vl
@@ -318,7 +318,7 @@ Source (.vl)
   |
   +-- Peephole --------- ASM-level micro-optimizations
   |
-  +-- Output (.asm)
+  +-- Output (.de1)
 ```
 
 ---

@@ -21,7 +21,7 @@ class AsmEmitter:
         return self._uid
 
     def emit(self, func_ir: dict[str, list[IRInstr]]) -> str:
-        """Produce the complete .asm file as a string."""
+        """Produce the complete .de1 file as a string."""
         self._func_ir = func_ir  # store for OnFree resolution
 
         self._scan_pools(func_ir)

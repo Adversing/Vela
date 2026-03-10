@@ -18,7 +18,7 @@ from src.errors import VelaError
 
 def compile_source(source: str, filename: str = "<stdin>",
                    project_root: str | Path | None = None) -> str:
-    """Compile Vela source code to .asm assembly text.
+    """Compile Vela source code to .de1 assembly text.
 
     *project_root* is the directory used to resolve ``import pkg::{mod}``
     statements.  Defaults to the parent directory of *filename*.
@@ -67,7 +67,7 @@ def compile_source(source: str, filename: str = "<stdin>",
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: velac <input.vl> [-o output.asm]")
+        print("Usage: velac <input.vl> [-o output.de1]")
         sys.exit(1)
 
     input_file = sys.argv[1]
@@ -79,7 +79,7 @@ def main() -> None:
             output_file = sys.argv[idx + 1]
 
     if output_file is None:
-        output_file = Path(input_file).stem + ".asm"
+        output_file = Path(input_file).stem + ".de1"
 
     try:
         with open(input_file, "r", encoding="utf-8") as f:

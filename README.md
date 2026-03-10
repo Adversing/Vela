@@ -125,10 +125,10 @@ Ptr<Circle> obj = null;   // Pointer to class instance
 ### Control Flow
 
 ```vl
-if (x > 0) { ... } else { ... }
-while (i < 10) { i++; }
+if (x > 0) { ... } else { ... }   // Condition must be Bool
+while (i < 10) { i++; }           // Condition must be Bool
 for (I16 i = 0; i < n; i++) { ... }
-ret value;                // Return from function
+ret value;                          // Return from function
 ```
 
 ### Classes
@@ -206,11 +206,26 @@ y.Abs();             // ❌ Error: primitive type 'I16' has no methods;
 The same applies to all wrapper types:
 
 ```vl
-Bool flag = 1;       // Auto-boxes into Bool
+Bool flag = true;    // Auto-boxes into Bool (only true/false or comparisons allowed)
 flag.Not();          // ✅ Works
 
 Float f = 3.14;      // Auto-boxes into Float
 f.Negate();          // ✅ Works
+```
+
+#### Bool Type Safety
+
+`Bool` is a **class** (from `stdlib/types/bool.vl`), not a primitive alias. It is a distinct type at compile-time with the same runtime footprint as `U8`. It is **NOT** implicitly convertible to/from integers:
+
+```vl
+Bool a = true;       // ✅ OK: boolean literal
+Bool b = (x > 0);   // ✅ OK: comparison produces Bool
+Bool c = 1;          // ❌ Error: cannot initialise Bool from I16
+I16 y = true;        // ❌ Error: cannot assign Bool to I16
+
+U8 x = 200;
+if (x) { ... }      // ❌ Error: if condition must be Bool, got U8
+if (x != 0) { ... } // ✅ OK: comparison produces Bool
 ```
 
 > **Note**: The compiler's optimizer (devirtualizer -> inliner -> escape analysis) can eliminate the boxing overhead entirely, replacing heap allocations with scalar register operations.
@@ -295,15 +310,15 @@ Implicit base class for all objects:
 
 ### `stdlib/types/`
 
-| Class    | Wraps  | Key Methods |
-|----------|--------|-------------|
-| `Int`    | I16    | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Equals()`, `MinWith()`, `MaxWith()`, `Clamp()` |
-| `Float`  | F16    | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Div()`, `Equals()`, `GreaterThan()`, `LessThan()` |
-| `Bool`   | I8     | `Not()`, `And()`, `Or()`, `Xor()`, `ToInt()`, `Equals()` |
-| `Char`   | U8     | `IsAlpha()`, `IsDigit()`, `IsUpper()`, `IsLower()`, `IsSpace()`, `ToUpper()`, `ToLower()`, `ToInt()`, `Equals()` |
-| `String` | Ptr+len | `IsEmpty()`, `CharAt()`, `Equals()`, `Contains()`, `IndexOf()` |
-| `Array`  | heap   | `Get()`, `Set()`, `Push()`, `Pop()`, `IsEmpty()`, `First()`, `Last()`, `Contains()`, `IndexOf()`, `Fill()`, `Clear()`, `Sum()` |
-| `Matrix` | heap   | `Get()`, `Set()`, `Size()`, `IsSquare()`, `Fill()`, `Sum()`, `Trace()`, `MulWith()`, `AddScalar()`, `Scale()` |
+| Class    | Wraps      | Key Methods |
+|----------|------------|-------------|
+| `Int`    | I16        | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Equals()`, `MinWith()`, `MaxWith()`, `Clamp()` |
+| `Float`  | F16        | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Div()`, `Equals()`, `GreaterThan()`, `LessThan()` |
+| `Bool`   | BoolType   | `Not()`, `And()`, `Or()`, `Xor()`, `ToInt()`, `Equals()` — distinct compile-time type, only accepts `true`/`false`/comparisons |
+| `Char`   | U8         | `IsAlpha()`, `IsDigit()`, `IsUpper()`, `IsLower()`, `IsSpace()`, `ToUpper()`, `ToLower()`, `ToInt()`, `Equals()` |
+| `String` | Ptr+len    | `IsEmpty()`, `CharAt()`, `Equals()`, `Contains()`, `IndexOf()` |
+| `Array`  | heap       | `Get()`, `Set()`, `Push()`, `Pop()`, `IsEmpty()`, `First()`, `Last()`, `Contains()`, `IndexOf()`, `Fill()`, `Clear()`, `Sum()` |
+| `Matrix` | heap       | `Get()`, `Set()`, `Size()`, `IsSquare()`, `Fill()`, `Sum()`, `Trace()`, `MulWith()`, `AddScalar()`, `Scale()` |
 
 ### `stdlib/math.vl`
 
@@ -322,7 +337,7 @@ Source (.vl)
   |
   +-- Semantic Analysis  Type checking, symbol resolution, import loading,
   |                      vtable construction, tag expansion,
-  |                      boxed-type enforcement (reject methods on primitives)
+  |                      boxed-type enforcement, Bool type safety
   |
   +-- IR Generation ---- AST -> three-address code (85+ IR operation types)
   |
@@ -395,7 +410,7 @@ Address Q:      __program_end: (null word -> CPU halts)
 ## Optimization Passes
 
 ### Constant Folding
-Evaluates constant expressions at compile time: `2 + 3` -> `5`
+Evaluates constant expressions at compile time: `2 + 3` -> `5`. Control-flow aware — clears known constants at label join points to avoid incorrect folding across branches.
 
 ### Strength Reduction
 Replaces expensive operations with cheaper equivalents:
@@ -419,6 +434,11 @@ Removes assignments whose results are never read.
 - **Self-move elimination**: `MOV Rx, Rx` -> removed
 - **Immediate folding**: `MOV Rx, Vimm` followed by use -> fold immediate
 - **MOV chain collapse**: `MOV Rx, src` + `MOV Ry, Rx` -> `MOV Ry, src`
+- **Conditional execution** (ARM-style predication): replaces branch-over patterns with predicated instructions, eliminating branches and pipeline flushes:
+  - **If-else diamond**: `Bcond; body1; B skip; target:; body2; skip:` -> `body1{inv_cond}; body2{cond}` (zero branches)
+  - **If-only**: `Bcond target; body; target:` -> `body{inv_cond}` (zero branches)
+  - **MAX/MIN collapse**: `CMP Ra, Rb; MOVGT Rd, Ra; MOVLE Rd, Rb` -> `MAX Rd, Ra, Rb` (1 instruction)
+  - **Orphan label cleanup**: removes unreferenced compiler-generated labels
 
 ---
 
@@ -464,14 +484,14 @@ Manual memory management with `Init<>` / `Free()`, pointer-based linked list tra
 Simulator result: **R0 = 30** ✓
 
 ### boxed_values.vl
-Tests auto-boxing with boxed wrapper types across `Int` (Abs, Add, IsZero, MaxWith, Clamp) and `Bool` (Not). Demonstrates that the optimizer eliminates all heap allocations - the generated `.de1` contains zero `__malloc`/`__free` calls in the main function body.
+Tests auto-boxing with boxed wrapper types across `Int` (Abs, Add, IsZero, MaxWith, Clamp) and `Bool` (Not, using `true`/`false` literals). Demonstrates that the optimizer eliminates all heap allocations - the generated `.de1` contains zero `__malloc`/`__free` calls in the main function body.
 
 ---
 
 ## Testing
 
 ```bash
-# Run all tests (284 tests)
+# Run all tests (285 tests)
 pytest tests/
 
 # Run specific test module

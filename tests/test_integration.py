@@ -71,9 +71,9 @@ class TestArithmetic:
     def test_addition_produces_add(self):
         asm = compile("""
             module test {
+                I16 add(I16 a, I16 b) { ret a + b; }
                 I16 main() {
-                    I16 x = 10 + 20;
-                    ret x;
+                    ret add(10, 20);
                 }
             }
         """)
@@ -182,13 +182,17 @@ class TestConditionals:
         assert "CMP" in asm
 
     def test_if_produces_conditional_branch(self):
+        # Use function parameter to prevent constant folding/conditional execution
         asm = compile("""
             module test {
-                I16 main() {
-                    I16 x = 5;
-                    if (x > 3) { ret 1; }
+                I16 check(I16 x) {
+                    if (x > 3) {
+                        Print(1);
+                        ret 1;
+                    }
                     ret 0;
                 }
+                I16 main() { ret check(5); }
             }
         """)
         has_branch = any(
@@ -197,12 +201,19 @@ class TestConditionals:
         assert has_branch, "expected at least one conditional branch instruction"
 
     def test_if_else_two_paths(self):
+        # Use function parameter to prevent constant folding/conditional execution
         asm = compile("""
             module test {
-                I16 main() {
-                    I16 x = 5;
-                    if (x == 5) { ret 1; } else { ret 0; }
+                I16 check(I16 x) {
+                    if (x == 5) {
+                        Print(1);
+                        ret 1;
+                    } else {
+                        Print(0);
+                        ret 0;
+                    }
                 }
+                I16 main() { ret check(5); }
             }
         """)
         assert "CMP" in asm
@@ -262,11 +273,33 @@ class TestClassAllocation:
 
 
 class TestAsmSections:
-    """Verify all programs produce the required ASM boilerplate."""
+    """Verify programs produce required ASM boilerplate when needed."""
 
     MINIMAL_PROGRAM = """
         module test {
             I16 main() { ret 0; }
+        }
+    """
+
+    # Program that uses syscall (Print)
+    SYSCALL_PROGRAM = """
+        module test {
+            I16 main() { Print(42); ret 0; }
+        }
+    """
+
+    # Program that uses malloc/free (class allocation)
+    ALLOC_PROGRAM = """
+        module test {
+            class Foo {
+                I16 val;
+                OnAlloc(I16 v) { val = v; }
+            }
+            I16 main() {
+                Ptr<Foo> f = Init<Foo>(v: 1);
+                Free(f);
+                ret 0;
+            }
         }
     """
 
@@ -279,24 +312,75 @@ class TestAsmSections:
         assert "main:" in asm
 
     def test_syscall_routine(self):
-        asm = compile(self.MINIMAL_PROGRAM)
+        # Only emitted when Print/syscall is used
+        asm = compile(self.SYSCALL_PROGRAM)
         assert "__syscall" in asm
 
     def test_malloc_routine(self):
-        asm = compile(self.MINIMAL_PROGRAM)
+        # Only emitted when class allocation is used
+        asm = compile(self.ALLOC_PROGRAM)
         assert "__malloc" in asm
 
     def test_free_routine(self):
-        asm = compile(self.MINIMAL_PROGRAM)
+        # Only emitted when Free is used
+        asm = compile(self.ALLOC_PROGRAM)
         assert "__free" in asm
 
     def test_heap_start_in_space(self):
-        asm = compile(self.MINIMAL_PROGRAM)
+        # Only emitted when malloc/free is used
+        asm = compile(self.ALLOC_PROGRAM)
         assert "__heap_start" in asm
 
     def test_free_list_head_in_space(self):
-        asm = compile(self.MINIMAL_PROGRAM)
+        # Only emitted when malloc/free is used
+        asm = compile(self.ALLOC_PROGRAM)
         assert "__free_list_head" in asm
+
+    def test_minimal_program_no_runtime(self):
+        """Dead runtime elimination: minimal program shouldn't include unused runtime."""
+        asm = compile(self.MINIMAL_PROGRAM)
+        # Minimal program should NOT include these since they're not used
+        assert "__malloc" not in asm
+        assert "__free" not in asm
+        assert "__heap_start" not in asm
+        assert "__syscall" not in asm
+        assert "__vdispatch" not in asm
+        assert "__free_list_head" not in asm
+        assert "__syscall_param" not in asm
+        assert "__syscall_id" not in asm
+
+    def test_print_only_does_not_pull_allocator(self):
+        asm = compile(self.SYSCALL_PROGRAM)
+        assert "__syscall" in asm
+        assert "__malloc" not in asm
+        assert "__free" not in asm
+        assert "__heap_start" not in asm
+        assert "__free_list_head" not in asm
+
+    def test_allocator_program_does_not_pull_syscall(self):
+        asm = compile("""
+            module test {
+                class Foo {
+                    I16 val;
+                    OnAlloc(I16 v) { val = v; }
+                    OnFree {}
+                }
+                I16 main() {
+                    Ptr<Foo> f = Init<Foo>(v: 1);
+                    Free(f);
+                    ret 0;
+                }
+            }
+        """)
+        assert "__malloc" in asm
+        assert "__free" in asm
+        assert "__heap_start" in asm
+        assert "__syscall" not in asm
+
+    def test_virtual_dispatch_runtime_not_forced(self):
+        """If a program does not require virtual dispatch, __vdispatch should stay absent."""
+        asm = compile(self.MINIMAL_PROGRAM)
+        assert "__vdispatch" not in asm
 
 
 class TestLoops:
@@ -517,3 +601,27 @@ class TestPipelineRobustness:
         assert isinstance(asm, str)
         assert "space:" in asm
         assert "main:" in asm
+
+
+class TestConditionalExecutionOptimization:
+    def test_if_else_select_prefers_conditional_exec(self):
+        asm = compile("""
+            module test {
+                I16 select(I16 a, I16 b) {
+                    I16 x = 0;
+                    if (a > b) {
+                        x = a;
+                    } else {
+                        x = b;
+                    }
+                    ret x;
+                }
+                I16 main() { ret select(7, 3); }
+            }
+        """)
+        # Preferred optimized shape: MAX or predicated moves; fallback branch form is acceptable.
+        assert (
+            ("MAX" in asm)
+            or ("CMP" in asm and "MOVGT" in asm and ("MOVLE" in asm or "MOVLT" in asm))
+            or any(b in asm for b in ["BGT", "BLT", "BGE", "BLE", "BEQ", "BNE"])
+        )

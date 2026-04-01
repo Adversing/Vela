@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 
-def emit_runtime() -> list[str]:
+def emit_runtime(
+    *,
+    include_syscall: bool = True,
+    include_vdispatch: bool = True,
+    include_malloc: bool = True,
+    include_free: bool = True,
+) -> list[str]:
     """Return assembly lines for the Vela runtime library."""
     lines: list[str] = []
-    lines.extend(_emit_syscall())
-    lines.append("")
-    lines.extend(_emit_vdispatch())
-    lines.append("")
-    lines.extend(_emit_malloc())
-    lines.append("")
-    lines.extend(_emit_free())
+    sections: list[list[str]] = []
+    if include_syscall:
+        sections.append(_emit_syscall())
+    if include_vdispatch:
+        sections.append(_emit_vdispatch())
+    if include_malloc:
+        sections.append(_emit_malloc())
+    if include_free:
+        sections.append(_emit_free())
+
+    for idx, sec in enumerate(sections):
+        lines.extend(sec)
+        if idx != len(sections) - 1:
+            lines.append("")
     return lines
 
 

@@ -25,6 +25,12 @@ class MemoryLayout:
         self._string_pool: dict[str, str] = {}     # text -> label
         self._float_pool: dict[float, str] = {}    # value -> label
         self._uid = 0
+        self._uses_heap_runtime = True
+        self._uses_syscall_runtime = True
+
+    def configure_runtime_usage(self, *, uses_heap: bool, uses_syscall: bool) -> None:
+        self._uses_heap_runtime = uses_heap
+        self._uses_syscall_runtime = uses_syscall
 
     def _next_uid(self) -> int:
         self._uid += 1
@@ -66,10 +72,13 @@ class MemoryLayout:
         return value > 4095 or value < -4095
 
     def _emit_runtime_vars(self) -> None:
-        self._entries.append(DataEntry("__heap_start", 2, ": 2"))
-        self._entries.append(DataEntry("__free_list_head", 2, ": 2"))
-        self._entries.append(DataEntry("__syscall_param", 2, ": 2"))
-        self._entries.append(DataEntry("__syscall_id", 2, ": 2"))
+        """Emit runtime support variables."""
+        if self._uses_heap_runtime:
+            self._entries.append(DataEntry("__heap_start", 2, ": 2"))
+            self._entries.append(DataEntry("__free_list_head", 2, ": 2"))
+        if self._uses_syscall_runtime:
+            self._entries.append(DataEntry("__syscall_param", 2, ": 2"))
+            self._entries.append(DataEntry("__syscall_id", 2, ": 2"))
 
     def _emit_globals(self) -> None:
         for name, ty, init_expr in self._tc.globals:

@@ -25,6 +25,11 @@ class AsmEmitter:
         self._func_ir = func_ir  # store for OnFree resolution
 
         self._scan_pools(func_ir)
+        runtime_usage = self._compute_runtime_usage(func_ir)
+        self._layout.configure_runtime_usage(
+            uses_heap=(runtime_usage["uses_malloc"] or runtime_usage["uses_free"]),
+            uses_syscall=runtime_usage["uses_syscall"],
+        )
 
         data_lines = self._layout.build()
         self._output.extend(data_lines)
@@ -36,9 +41,11 @@ class AsmEmitter:
 
         self._output.append("main:")
 
-        self._output.append("    MOV R0, __program_end")
-        self._output.append("    ADD R0, R0, V4")
-        self._output.append("    SAVEM R0, [__heap_start]")
+        # Heap bootstrap is needed only when allocation can happen.
+        if runtime_usage["uses_malloc"] or runtime_usage["uses_free"]:
+            self._output.append("    MOV R0, __program_end")
+            self._output.append("    ADD R0, R0, V4")
+            self._output.append("    SAVEM R0, [__heap_start]")
 
         if vtable_init:
             self._output.extend(vtable_init)
@@ -61,8 +68,15 @@ class AsmEmitter:
             self._emit_function(func_name, instrs)
             self._output.append("")
 
-        # emit runtime
-        self._output.extend(emit_runtime())
+        # emit only runtime helpers that are actually referenced by IR
+        self._output.extend(
+            emit_runtime(
+                include_syscall=runtime_usage["uses_syscall"],
+                include_vdispatch=runtime_usage["uses_vdispatch"],
+                include_malloc=runtime_usage["uses_malloc"],
+                include_free=runtime_usage["uses_free"],
+            )
+        )
 
         self._output.append("")
         self._output.append("__program_end:") # this will be filled in by the linker with the actual end address of the program
@@ -70,6 +84,32 @@ class AsmEmitter:
         self._output = peephole_optimize(self._output)
 
         return "\n".join(self._output)
+
+    def _compute_runtime_usage(self, func_ir: dict[str, list[IRInstr]]) -> dict[str, bool]:
+        """Detect which runtime helper functions are actually needed."""
+        uses_syscall = False
+        uses_vdispatch = False
+        uses_malloc = False
+        uses_free = False
+
+        for instrs in func_ir.values():
+            for instr in instrs:
+                if instr.op == IROp.PRINT_SYSCALL:
+                    uses_syscall = True
+                elif instr.op == IROp.VCALL:
+                    uses_vdispatch = True
+                elif instr.op == IROp.CALL:
+                    if instr.label == "__malloc":
+                        uses_malloc = True
+                    elif instr.label == "__free":
+                        uses_free = True
+
+        return {
+            "uses_syscall": uses_syscall,
+            "uses_vdispatch": uses_vdispatch,
+            "uses_malloc": uses_malloc,
+            "uses_free": uses_free,
+        }
 
     def _scan_pools(self, func_ir: dict[str, list[IRInstr]]) -> None:
         """Pre-scan IR for constants > 4095, string labels, and float constants."""

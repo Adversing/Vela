@@ -1,101 +1,100 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import NoReturn
-
-
-class Severity(Enum):
-    WARNING = auto()
-    ERROR = auto()
-    FATAL = auto()
-
-
-@dataclass(frozen=True)
-class SourceLocation:
-    """Pinpoints a position in the source code."""
-    file: str
-    line: int
-    column: int
-
-    def __str__(self) -> str:
-        return f"{self.file}:{self.line}:{self.column}"
-
-
-@dataclass
-class CompilerDiagnostic:
-    severity: Severity
-    message: str
-    location: SourceLocation | None = None
-    hint: str | None = None
-
-    def __str__(self) -> str:
-        prefix = self.severity.name.lower()
-        loc = f" at {self.location}" if self.location else ""
-        hint = f"\n  hint: {self.hint}" if self.hint else ""
-        return f"{prefix}{loc}: {self.message}{hint}"
+from src.diagnostics import (
+    CompilerDiagnostic,
+    DiagnosticCollector,
+    DiagnosticLabel,
+    Severity,
+    SourceLocation,
+    SourceMap,
+    SourceSpan,
+    closest_name,
+    default_source_map,
+    did_you_mean,
+    register_source,
+)
 
 
 class VelaError(Exception):
     """Base class for all Vela compiler errors."""
-    def __init__(self, message: str, location: SourceLocation | None = None) -> None:
-        self.message = message
-        self.location = location
-        super().__init__(str(self))
+
+    def __init__(
+        self,
+        message: str,
+        location: SourceLocation | None = None,
+        *,
+        span: SourceSpan | None = None,
+        hint: str | None = None,
+        code: str | None = None,
+        labels: list[DiagnosticLabel] | None = None,
+        notes: list[str] | None = None,
+        suggestions: list[str] | None = None,
+        diagnostic: CompilerDiagnostic | None = None,
+        source_map: SourceMap | None = None,
+    ) -> None:
+        if diagnostic is None:
+            diagnostic = CompilerDiagnostic(
+                severity=Severity.ERROR,
+                message=message,
+                location=location,
+                hint=hint,
+                span=span,
+                code=code,
+                labels=list(labels or []),
+                notes=list(notes or []),
+                suggestions=list(suggestions or []),
+            )
+        self.diagnostic = diagnostic
+        self.message = diagnostic.message
+        self.location = location or (diagnostic.span.location if diagnostic.span else None)
+        self.source_map = source_map
+        super().__init__(self.__str__())
 
     def __str__(self) -> str:
-        loc = f" at {self.location}" if self.location else ""
-        return f"error{loc}: {self.message}"
+        return self.diagnostic.render(self.source_map or default_source_map)
 
 
 class LexerError(VelaError):
     """Raised during tokenization."""
-    pass
 
 
 class ParseError(VelaError):
     """Raised during parsing."""
-    pass
 
 
 class SemanticError(VelaError):
     """Raised during semantic analysis."""
-    pass
 
 
 class TypeError_(VelaError):
     """Raised for type mismatches (name avoids shadowing builtins)."""
-    pass
 
 
 class CodeGenError(VelaError):
     """Raised during code generation or register allocation."""
-    pass
 
 
 class ImportError_(VelaError):
     """Raised for import resolution failures."""
-    pass
 
 
-@dataclass
-class DiagnosticCollector:
-    """Accumulates diagnostics across compiler phases."""
-    diagnostics: list[CompilerDiagnostic] = field(default_factory=list)
-
-    def warn(self, message: str, location: SourceLocation | None = None, hint: str | None = None) -> None:
-        self.diagnostics.append(CompilerDiagnostic(Severity.WARNING, message, location, hint))
-
-    def error(self, message: str, location: SourceLocation | None = None, hint: str | None = None) -> None:
-        self.diagnostics.append(CompilerDiagnostic(Severity.ERROR, message, location, hint))
-
-    def fatal(self, message: str, location: SourceLocation | None = None) -> NoReturn:
-        self.diagnostics.append(CompilerDiagnostic(Severity.FATAL, message, location))
-        raise VelaError(message, location)
-
-    @property
-    def has_errors(self) -> bool:
-        return any(d.severity in (Severity.ERROR, Severity.FATAL) for d in self.diagnostics)
-
-    def dump(self) -> str:
-        return "\n".join(str(d) for d in self.diagnostics)
+__all__ = [
+    "CodeGenError",
+    "CompilerDiagnostic",
+    "DiagnosticCollector",
+    "DiagnosticLabel",
+    "ImportError_",
+    "LexerError",
+    "ParseError",
+    "SemanticError",
+    "Severity",
+    "SourceLocation",
+    "SourceMap",
+    "SourceSpan",
+    "TypeError_",
+    "VelaError",
+    "closest_name",
+    "default_source_map",
+    "did_you_mean",
+    "register_source",
+]

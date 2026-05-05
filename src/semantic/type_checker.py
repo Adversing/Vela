@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.errors import SemanticError, VelaError, SourceLocation
+from src.errors import SemanticError, VelaError, SourceLocation, SourceSpan, did_you_mean
 from src.parser.ast_nodes import *
 from src.semantic.types import (
     VelaType, VoidType, IntType, FloatType, PtrType_, BoolType,
@@ -252,8 +252,33 @@ class TypeChecker:
                     getattr(stmt.value, "location", None),
                 )
         elif isinstance(stmt, ReturnStmt):
+            expected = self._resolve_type(self._current_func.return_type) if self._current_func else U0
             if stmt.value:
-                self._check_expr(stmt.value)
+                actual = self._check_expr(stmt.value)
+                if isinstance(expected, VoidType):
+                    raise SemanticError(
+                        f"function '{self._current_func.name if self._current_func else '<unknown>'}' "
+                        "returns U0 and must not return a value",
+                        getattr(stmt.value, "location", None),
+                        span=self._expr_span(stmt.value),
+                        hint="use 'ret;' or change the function return type",
+                    )
+                if not self._argument_compatible(expected, actual, stmt.value):
+                    raise SemanticError(
+                        f"function '{self._current_func.name if self._current_func else '<unknown>'}' "
+                        f"returns {expected}, got {actual}",
+                        getattr(stmt.value, "location", None),
+                        span=self._expr_span(stmt.value),
+                        hint="return a value compatible with the function declaration",
+                    )
+            elif not isinstance(expected, VoidType):
+                raise SemanticError(
+                    f"function '{self._current_func.name if self._current_func else '<unknown>'}' "
+                    f"must return {expected}",
+                    getattr(stmt, "location", None),
+                    span=self._location_span(getattr(stmt, "location", None), len("ret")),
+                    hint="return a value or change the function return type to U0",
+                )
         elif isinstance(stmt, IfStmt):
             cond_ty = self._check_expr(stmt.condition)
             if not is_bool_like(cond_ty):
@@ -333,7 +358,13 @@ class TypeChecker:
         if isinstance(expr, IdentifierExpr):
             sym = self.scopes.lookup(expr.name)
             if sym is None:
-                raise SemanticError(f"undefined identifier '{expr.name}'", expr.location)
+                raise self._undefined_name_error(
+                    "identifier",
+                    expr.name,
+                    expr.location,
+                    self._expr_span(expr, len(expr.name)),
+                    self.scopes.visible_names(),
+                )
             expr.inferred_type = sym.type
             return sym.type
         if isinstance(expr, BinaryExpr):
@@ -377,7 +408,24 @@ class TypeChecker:
         if isinstance(expr, CallExpr):
             if isinstance(expr.callee, IdentifierExpr):
                 sym = self.scopes.lookup(expr.callee.name)
-                if sym and sym.return_type:
+                arg_types = [self._check_expr(a) for a in expr.args]
+                if sym is None:
+                    raise self._undefined_name_error(
+                        "function",
+                        expr.callee.name,
+                        expr.callee.location,
+                        self._expr_span(expr.callee, len(expr.callee.name)),
+                        self.scopes.visible_names(kinds={"func"}),
+                    )
+                if sym.kind != "func":
+                    raise SemanticError(
+                        f"'{expr.callee.name}' is a {sym.kind}, not a function",
+                        expr.callee.location,
+                        span=self._expr_span(expr.callee, len(expr.callee.name)),
+                    )
+                self._check_call_arity(expr.callee.name, len(sym.params), len(expr.args), expr)
+                self._check_argument_types(expr.callee.name, sym.params, arg_types, expr.args)
+                if sym.return_type:
                     expr.inferred_type = sym.return_type
                     return sym.return_type
             for a in expr.args:
@@ -406,14 +454,34 @@ class TypeChecker:
             elif isinstance(obj_type, ClassType):
                 cls_type = obj_type
             if cls_type:
-                # look up method return type from class declaration
-                cls_decl = self.class_decls.get(cls_type.name)
-                if cls_decl:
-                    for m in cls_decl.methods:
-                        if m.name == expr.method:
-                            ret = self._resolve_type(m.return_type)
-                            expr.inferred_type = ret
-                            return ret
+                method_decl = self._find_method_decl(cls_type.name, expr.method)
+                if method_decl is None:
+                    candidates = self._class_method_names(cls_type.name)
+                    raise self._undefined_name_error(
+                        "method",
+                        expr.method,
+                        expr.method_location or expr.location,
+                        self._location_span(expr.method_location or expr.location, len(expr.method)),
+                        candidates,
+                        owner=f"type '{cls_type.name}'",
+                    )
+                arg_types = [getattr(a, "inferred_type", None) or self._check_expr(a) for a in expr.args]
+                param_types = [self._resolve_type(p.type_expr) for p in method_decl.params]
+                self._check_call_arity(
+                    f"{cls_type.name}.{expr.method}",
+                    len(param_types),
+                    len(expr.args),
+                    expr,
+                )
+                self._check_argument_types(
+                    f"{cls_type.name}.{expr.method}",
+                    param_types,
+                    arg_types,
+                    expr.args,
+                )
+                ret = self._resolve_type(method_decl.return_type)
+                expr.inferred_type = ret
+                return ret
             expr.inferred_type = I16
             return I16
         if isinstance(expr, FieldAccessExpr):
@@ -435,6 +503,14 @@ class TypeChecker:
                     if fn == expr.field_name:
                         expr.inferred_type = ft
                         return ft
+                raise self._undefined_name_error(
+                    "field",
+                    expr.field_name,
+                    expr.field_location or expr.location,
+                    self._location_span(expr.field_location or expr.location, len(expr.field_name)),
+                    [name for name, _ in ot.inner.fields],
+                    owner=f"type '{ot.inner.name}'",
+                )
             return expr.inferred_type
         if isinstance(expr, IndexExpr):
             self._check_expr(expr.obj)
@@ -476,10 +552,16 @@ class TypeChecker:
             return expr.inferred_type
         if isinstance(expr, InitExpr):
             ct = self.class_types.get(expr.class_name)
-            if ct:
-                expr.inferred_type = PtrType_(inner=ct)
-            else:
-                expr.inferred_type = PtrType_(inner=VoidType())
+            if ct is None:
+                raise self._undefined_name_error(
+                    "class",
+                    expr.class_name,
+                    expr.location,
+                    self._location_span(expr.location, len("Init")),
+                    self.class_types.keys(),
+                )
+            self._check_init_args(expr)
+            expr.inferred_type = PtrType_(inner=ct)
             return expr.inferred_type
         if isinstance(expr, MallocExpr):
             self._check_expr(expr.size)
@@ -501,6 +583,147 @@ class TypeChecker:
         # fallback
         expr.inferred_type = I16
         return I16
+
+    def _expr_span(self, expr: Expr, width: int = 1) -> SourceSpan | None:
+        if getattr(expr, "span", None) is not None:
+            return expr.span
+        return self._location_span(getattr(expr, "location", None), width)
+
+    def _location_span(self, location: SourceLocation | None, width: int = 1) -> SourceSpan | None:
+        if location is None:
+            return None
+        return SourceSpan.from_location(location, width)
+
+    def _undefined_name_error(
+        self,
+        kind: str,
+        name: str,
+        location: SourceLocation | None,
+        span: SourceSpan | None,
+        candidates,
+        *,
+        owner: str | None = None,
+    ) -> SemanticError:
+        subject = f"{kind} '{name}'"
+        if owner:
+            message = f"{owner} has no {subject}"
+        else:
+            message = f"undefined {subject}"
+        hint = did_you_mean(name, candidates)
+        if hint is None:
+            hint = "check the spelling, declaration order, and imports"
+        return SemanticError(message, location, span=span, hint=hint)
+
+    def _check_call_arity(
+        self,
+        callable_name: str,
+        expected: int,
+        actual: int,
+        expr: Expr,
+    ) -> None:
+        if expected == actual:
+            return
+        noun = "argument" if expected == 1 else "arguments"
+        raise SemanticError(
+            f"{callable_name} expects {expected} {noun}, got {actual}",
+            getattr(expr, "location", None),
+            span=self._expr_span(expr),
+            hint="adjust the argument list to match the declaration",
+        )
+
+    def _check_argument_types(
+        self,
+        callable_name: str,
+        expected: list[VelaType],
+        actual: list[VelaType],
+        args: list[Expr],
+    ) -> None:
+        for idx, (expected_ty, actual_ty) in enumerate(zip(expected, actual), start=1):
+            if self._argument_compatible(expected_ty, actual_ty, args[idx - 1]):
+                continue
+            raise SemanticError(
+                f"argument {idx} of {callable_name} expects {expected_ty}, got {actual_ty}",
+                getattr(args[idx - 1], "location", None),
+                span=self._expr_span(args[idx - 1]),
+                hint="use Cast<T>(expr) only when the conversion is intentional",
+            )
+
+    def _find_method_decl(self, class_name: str, method_name: str) -> FunctionDecl | None:
+        cls_decl = self.class_decls.get(class_name)
+        while cls_decl is not None:
+            for method in cls_decl.methods:
+                if method.name == method_name:
+                    return method
+            if not cls_decl.parent:
+                return None
+            cls_decl = self.class_decls.get(cls_decl.parent)
+        return None
+
+    def _class_method_names(self, class_name: str) -> list[str]:
+        names: list[str] = []
+        cls_decl = self.class_decls.get(class_name)
+        while cls_decl is not None:
+            names.extend(method.name for method in cls_decl.methods)
+            if not cls_decl.parent:
+                break
+            cls_decl = self.class_decls.get(cls_decl.parent)
+        return names
+
+    def _check_init_args(self, expr: InitExpr) -> None:
+        cls = self.class_decls.get(expr.class_name)
+        if cls is None or cls.on_alloc is None:
+            expected_params: list[ParamDecl] = []
+        else:
+            expected_params = cls.on_alloc.params
+
+        self._check_call_arity(
+            f"Init<{expr.class_name}>",
+            len(expected_params),
+            len(expr.kwargs),
+            expr,
+        )
+        expected_names = [param.name for param in expected_params]
+        for idx, ((name, value_expr), param) in enumerate(zip(expr.kwargs, expected_params), start=1):
+            if name != param.name:
+                hint = did_you_mean(name, expected_names)
+                if hint is None:
+                    hint = (
+                        "Init<T> arguments are named but currently lowered in "
+                        "OnAlloc parameter order"
+                    )
+                raise SemanticError(
+                    f"argument {idx} of Init<{expr.class_name}> is named '{name}', "
+                    f"expected '{param.name}'",
+                    getattr(value_expr, "location", None),
+                    span=self._expr_span(value_expr),
+                    hint=hint,
+                )
+            actual_ty = self._check_expr(value_expr)
+            expected_ty = self._resolve_type(param.type_expr)
+            if not self._argument_compatible(expected_ty, actual_ty, value_expr):
+                raise SemanticError(
+                    f"argument '{name}' of Init<{expr.class_name}> expects "
+                    f"{expected_ty}, got {actual_ty}",
+                    getattr(value_expr, "location", None),
+                    span=self._expr_span(value_expr),
+                    hint="use Cast<T>(expr) only when the conversion is intentional",
+                )
+
+    def _argument_compatible(self, expected: VelaType, actual: VelaType, expr: Expr) -> bool:
+        if types_compatible(expected, actual):
+            return True
+        if isinstance(expected, IntType) and isinstance(actual, IntType) and isinstance(expr, IntLiteral):
+            return self._int_literal_fits(expr.value, expected)
+        return False
+
+    def _int_literal_fits(self, value: int, target: IntType) -> bool:
+        if target.signed:
+            low = -(1 << (target.bits - 1))
+            high = (1 << (target.bits - 1)) - 1
+        else:
+            low = 0
+            high = (1 << target.bits) - 1
+        return low <= value <= high
 
     def _resolve_type(self, texpr: TypeExpr | None) -> VelaType:
         if texpr is None:

@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.errors import SourceLocation
+from src.errors import SourceLocation, SourceSpan
 
 @dataclass
 class ASTNode:
     location: SourceLocation | None = field(default=None, repr=False, kw_only=True)
+    span: SourceSpan | None = field(default=None, repr=False, kw_only=True)
 
 
 @dataclass
@@ -226,12 +227,14 @@ class MethodCallExpr(Expr):
     obj: Expr | None = None
     method: str = ""
     args: list[Expr] = field(default_factory=list)
+    method_location: SourceLocation | None = field(default=None, repr=False)
 
 
 @dataclass
 class FieldAccessExpr(Expr):
     obj: Expr | None = None
     field_name: str = ""
+    field_location: SourceLocation | None = field(default=None, repr=False)
 
 
 @dataclass

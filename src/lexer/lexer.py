@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.errors import LexerError, SourceLocation
+from src.errors import LexerError, SourceLocation, SourceSpan, register_source
 from src.lexer.tokens import KEYWORDS, Token, TokenKind
 
 
@@ -10,6 +10,7 @@ class Lexer:
     def __init__(self, source: str, filename: str = "<stdin>") -> None:
         self._src = source
         self._file = filename
+        register_source(filename, source)
         self._pos = 0
         self._line = 1
         self._col = 1
@@ -51,8 +52,16 @@ class Lexer:
         self._advance()
         return True
 
-    def _make(self, kind: TokenKind, value: str) -> Token:
-        return Token(kind, value, self._loc())
+    def _make(self, kind: TokenKind, value: str, loc: SourceLocation | None = None) -> Token:
+        loc = loc or self._loc()
+        span = SourceSpan(
+            file=loc.file,
+            start_line=loc.line,
+            start_column=loc.column,
+            end_line=max(loc.line, self._line),
+            end_column=max(1, self._col),
+        ).normalized()
+        return Token(kind, value, loc, span)
 
     def _skip_whitespace_and_comments(self) -> None:
         while not self._at_end():
@@ -75,67 +84,67 @@ class Lexer:
         # two-char tokens first
         if ch == "[" and self._peek(1) == "[":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.TAG_OPEN, "[[", loc))
+            self._tokens.append(self._make(TokenKind.TAG_OPEN, "[[", loc))
             return
         if ch == "]" and self._peek(1) == "]":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.TAG_CLOSE, "]]", loc))
+            self._tokens.append(self._make(TokenKind.TAG_CLOSE, "]]", loc))
             return
         if ch == "=" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.EQ, "==", loc))
+            self._tokens.append(self._make(TokenKind.EQ, "==", loc))
             return
         if ch == "!" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.NEQ, "!=", loc))
+            self._tokens.append(self._make(TokenKind.NEQ, "!=", loc))
             return
         if ch == "<" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.LTE, "<=", loc))
+            self._tokens.append(self._make(TokenKind.LTE, "<=", loc))
             return
         if ch == ">" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.GTE, ">=", loc))
+            self._tokens.append(self._make(TokenKind.GTE, ">=", loc))
             return
         if ch == "&" and self._peek(1) == "&":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.AND, "&&", loc))
+            self._tokens.append(self._make(TokenKind.AND, "&&", loc))
             return
         if ch == "|" and self._peek(1) == "|":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.OR, "||", loc))
+            self._tokens.append(self._make(TokenKind.OR, "||", loc))
             return
         if ch == "+" and self._peek(1) == "+":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.PLUS_PLUS, "++", loc))
+            self._tokens.append(self._make(TokenKind.PLUS_PLUS, "++", loc))
             return
         if ch == "-" and self._peek(1) == "-":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.MINUS_MINUS, "--", loc))
+            self._tokens.append(self._make(TokenKind.MINUS_MINUS, "--", loc))
             return
         if ch == "+" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.PLUS_EQ, "+=", loc))
+            self._tokens.append(self._make(TokenKind.PLUS_EQ, "+=", loc))
             return
         if ch == "-" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.MINUS_EQ, "-=", loc))
+            self._tokens.append(self._make(TokenKind.MINUS_EQ, "-=", loc))
             return
         if ch == "*" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.STAR_EQ, "*=", loc))
+            self._tokens.append(self._make(TokenKind.STAR_EQ, "*=", loc))
             return
         if ch == "/" and self._peek(1) == "=":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.SLASH_EQ, "/=", loc))
+            self._tokens.append(self._make(TokenKind.SLASH_EQ, "/=", loc))
             return
         if ch == "<" and self._peek(1) == "-":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.ARROW, "<-", loc))
+            self._tokens.append(self._make(TokenKind.ARROW, "<-", loc))
             return
         if ch == ":" and self._peek(1) == ":":
             self._advance(); self._advance()
-            self._tokens.append(Token(TokenKind.DOUBLE_COLON, "::", loc))
+            self._tokens.append(self._make(TokenKind.DOUBLE_COLON, "::", loc))
             return
 
         # single-char tokens
@@ -153,7 +162,7 @@ class Lexer:
         }
         if ch in single:
             self._advance()
-            self._tokens.append(Token(single[ch], ch, loc))
+            self._tokens.append(self._make(single[ch], ch, loc))
             return
 
         # String literal
@@ -181,7 +190,7 @@ class Lexer:
             self._scan_identifier(loc)
             return
 
-        raise LexerError(f"unexpected character {ch!r}", loc)
+        raise LexerError(f"unexpected character {ch!r}", loc, span=SourceSpan.from_location(loc))
 
     def _scan_string(self, loc: SourceLocation) -> None:
         self._advance()  # opening "
@@ -194,9 +203,14 @@ class Lexer:
             else:
                 buf.append(self._advance())
         if self._at_end():
-            raise LexerError("unterminated string literal", loc)
+            raise LexerError(
+                "unterminated string literal",
+                loc,
+                span=SourceSpan.from_location(loc),
+                hint="close the string literal with a double quote",
+            )
         self._advance()  # closing "
-        self._tokens.append(Token(TokenKind.STRING_LITERAL, "".join(buf), loc))
+        self._tokens.append(self._make(TokenKind.STRING_LITERAL, "".join(buf), loc))
 
     def _scan_char(self, loc: SourceLocation) -> None:
         self._advance()  # opening '
@@ -207,9 +221,14 @@ class Lexer:
         else:
             val = self._advance()
         if self._at_end() or self._peek() != "'":
-            raise LexerError("unterminated char literal", loc)
+            raise LexerError(
+                "unterminated char literal",
+                loc,
+                span=SourceSpan.from_location(loc),
+                hint="close the character literal with a single quote",
+            )
         self._advance()  # closing '
-        self._tokens.append(Token(TokenKind.CHAR_LITERAL, val, loc))
+        self._tokens.append(self._make(TokenKind.CHAR_LITERAL, val, loc))
 
     def _scan_number(self, loc: SourceLocation) -> None:
         start = self._pos
@@ -218,14 +237,14 @@ class Lexer:
             self._advance(); self._advance()
             while not self._at_end() and self._peek() in "0123456789abcdefABCDEF_":
                 self._advance()
-            self._tokens.append(Token(TokenKind.INT_LITERAL, self._src[start:self._pos], loc))
+            self._tokens.append(self._make(TokenKind.INT_LITERAL, self._src[start:self._pos], loc))
             return
         # Binary 0b
         if self._peek() == "0" and self._peek(1) in ("b", "B"):
             self._advance(); self._advance()
             while not self._at_end() and self._peek() in "01_":
                 self._advance()
-            self._tokens.append(Token(TokenKind.INT_LITERAL, self._src[start:self._pos], loc))
+            self._tokens.append(self._make(TokenKind.INT_LITERAL, self._src[start:self._pos], loc))
             return
         # Decimal / float
         while not self._at_end() and (self._peek().isdigit() or self._peek() == "_"):
@@ -246,7 +265,7 @@ class Lexer:
                 self._advance()
         text = self._src[start:self._pos]
         kind = TokenKind.FLOAT_LITERAL if is_float else TokenKind.INT_LITERAL
-        self._tokens.append(Token(kind, text, loc))
+        self._tokens.append(self._make(kind, text, loc))
 
     def _scan_identifier(self, loc: SourceLocation) -> None:
         start = self._pos
@@ -254,4 +273,4 @@ class Lexer:
             self._advance()
         text = self._src[start:self._pos]
         kind = KEYWORDS.get(text, TokenKind.IDENTIFIER)
-        self._tokens.append(Token(kind, text, loc))
+        self._tokens.append(self._make(kind, text, loc))

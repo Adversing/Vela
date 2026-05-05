@@ -51,6 +51,11 @@ class Scope:
     def all_symbols(self) -> dict[str, Symbol]:
         return dict(self._symbols)
 
+    def visible_symbols(self) -> dict[str, Symbol]:
+        symbols = self.parent.visible_symbols() if self.parent is not None else {}
+        symbols.update(self._symbols)
+        return symbols
+
 
 class ScopeStack:
     """Manages a stack of nested scopes."""
@@ -83,3 +88,9 @@ class ScopeStack:
 
     def lookup(self, name: str) -> Symbol | None:
         return self._current.lookup(name)
+
+    def visible_names(self, *, kinds: set[str] | None = None) -> list[str]:
+        symbols = self._current.visible_symbols()
+        if kinds is None:
+            return list(symbols)
+        return [name for name, sym in symbols.items() if sym.kind in kinds]

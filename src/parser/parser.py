@@ -51,9 +51,56 @@ class Parser:
     def _expect(self, kind: TokenKind, msg: str = "") -> Token:
         if not self._at(kind):
             token = self._cur()
-            detail = msg or f"expected {kind.name}, got {token.kind.name} ({token.value!r})"
-            raise ParseError(detail, token.location)
+            detail = msg or f"expected {self._kind_label(kind)}, got {self._token_label(token)}"
+            raise ParseError(
+                detail,
+                token.location,
+                span=token.span,
+                hint=self._expected_hint(kind, token),
+            )
         return self._advance()
+
+    def _kind_label(self, kind: TokenKind) -> str:
+        labels = {
+            TokenKind.SEMICOLON: "';'",
+            TokenKind.LBRACE: "'{'",
+            TokenKind.RBRACE: "'}'",
+            TokenKind.LPAREN: "'('",
+            TokenKind.RPAREN: "')'",
+            TokenKind.LBRACKET: "'['",
+            TokenKind.RBRACKET: "']'",
+            TokenKind.COMMA: "','",
+            TokenKind.COLON: "':'",
+            TokenKind.DOT: "'.'",
+            TokenKind.LT: "'<'",
+            TokenKind.GT: "'>'",
+            TokenKind.IDENTIFIER: "identifier",
+            TokenKind.KW_MODULE: "'module'",
+            TokenKind.KW_CLASS: "'class'",
+            TokenKind.KW_RET: "'ret'",
+            TokenKind.EOF: "end of file",
+        }
+        return labels.get(kind, kind.name)
+
+    def _token_label(self, token: Token) -> str:
+        if token.kind == TokenKind.EOF:
+            return "end of file"
+        if token.value:
+            return f"{token.kind.name} ({token.value!r})"
+        return token.kind.name
+
+    def _expected_hint(self, kind: TokenKind, token: Token) -> str | None:
+        if kind == TokenKind.SEMICOLON:
+            return "statements and declarations must end with ';'"
+        if kind == TokenKind.RBRACE and token.kind == TokenKind.EOF:
+            return "close the block with '}'"
+        if kind == TokenKind.RPAREN:
+            return "close the argument list or condition with ')'"
+        if kind == TokenKind.KW_MODULE and token.kind == TokenKind.IDENTIFIER:
+            return "a Vela source file starts with a module declaration, for example: module app { ... }"
+        if kind == TokenKind.IDENTIFIER and token.kind != TokenKind.IDENTIFIER:
+            return "insert a name here"
+        return None
 
     def _match(self, *kinds: TokenKind) -> Token | None:
         if self._at(*kinds):
@@ -189,7 +236,13 @@ class Parser:
             # fallback: rewind
             self._pos = saved
 
-        raise ParseError(f"unexpected token in class body: {self._cur().value!r}", self._loc())
+        token = self._cur()
+        raise ParseError(
+            f"unexpected token in class body: {token.value!r}",
+            token.location,
+            span=token.span,
+            hint="class bodies can contain fields, methods, OnAlloc, and OnFree",
+        )
 
     def _parse_on_alloc(self) -> FunctionDecl:
         loc = self._loc()
@@ -300,7 +353,12 @@ class Parser:
         }
         if tok.kind in type_map:
             return NamedType(name=type_map[tok.kind], location=loc)
-        raise ParseError(f"expected type, got {tok.kind.name} ({tok.value!r})", loc)
+        raise ParseError(
+            f"expected type, got {self._token_label(tok)}",
+            loc,
+            span=tok.span,
+            hint="use a primitive type, class name, alias, or Ptr<T>",
+        )
 
     def _parse_block(self) -> list[Stmt]:
         self._expect(TokenKind.LBRACE)
@@ -570,14 +628,26 @@ class Parser:
         while True:
             if self._at(TokenKind.DOT):
                 self._advance()
-                name = self._expect(TokenKind.IDENTIFIER).value
+                name_tok = self._expect(TokenKind.IDENTIFIER)
+                name = name_tok.value
                 if self._at(TokenKind.LPAREN):
                     self._advance()
                     args = self._parse_arg_list()
                     self._expect(TokenKind.RPAREN)
-                    expr = MethodCallExpr(obj=expr, method=name, args=args, location=expr.location)
+                    expr = MethodCallExpr(
+                        obj=expr,
+                        method=name,
+                        args=args,
+                        location=expr.location,
+                        method_location=name_tok.location,
+                    )
                 else:
-                    expr = FieldAccessExpr(obj=expr, field_name=name, location=expr.location)
+                    expr = FieldAccessExpr(
+                        obj=expr,
+                        field_name=name,
+                        location=expr.location,
+                        field_location=name_tok.location,
+                    )
             elif self._at(TokenKind.LBRACKET):
                 self._advance()
                 idx = self._parse_expr()
@@ -607,29 +677,31 @@ class Parser:
                 val = int(val_str, 2)
             else:
                 val = int(val_str)
-            return IntLiteral(value=val, location=loc)
+            return IntLiteral(value=val, location=loc, span=tok.span)
 
         if self._at(TokenKind.FLOAT_LITERAL):
             tok = self._advance()
-            return FloatLiteral(value=float(tok.value.replace("_", "")), location=loc)
+            return FloatLiteral(value=float(tok.value.replace("_", "")), location=loc, span=tok.span)
 
         if self._at(TokenKind.STRING_LITERAL):
-            return StringLiteral(value=self._advance().value, location=loc)
+            tok = self._advance()
+            return StringLiteral(value=tok.value, location=loc, span=tok.span)
 
         if self._at(TokenKind.CHAR_LITERAL):
-            return CharLiteral(value=self._advance().value, location=loc)
+            tok = self._advance()
+            return CharLiteral(value=tok.value, location=loc, span=tok.span)
 
         if self._at(TokenKind.BOOL_TRUE):
-            self._advance()
-            return BoolLiteral(value=True, location=loc)
+            tok = self._advance()
+            return BoolLiteral(value=True, location=loc, span=tok.span)
 
         if self._at(TokenKind.BOOL_FALSE):
-            self._advance()
-            return BoolLiteral(value=False, location=loc)
+            tok = self._advance()
+            return BoolLiteral(value=False, location=loc, span=tok.span)
 
         if self._at(TokenKind.NULL_LITERAL):
-            self._advance()
-            return NullLiteral(location=loc)
+            tok = self._advance()
+            return NullLiteral(location=loc, span=tok.span)
 
         # multi-dispatch: {a, b}.method(args)
         if self._at(TokenKind.LBRACE):
@@ -658,8 +730,13 @@ class Parser:
                 self._advance()
                 args = self._parse_arg_list()
                 self._expect(TokenKind.RPAREN)
-                return CallExpr(callee=IdentifierExpr(name=tok.value, location=loc), args=args, location=loc)
-            return IdentifierExpr(name=tok.value, location=loc)
+                return CallExpr(
+                    callee=IdentifierExpr(name=tok.value, location=loc, span=tok.span),
+                    args=args,
+                    location=loc,
+                    span=tok.span,
+                )
+            return IdentifierExpr(name=tok.value, location=loc, span=tok.span)
 
         # Parenthesized expr
         if self._at(TokenKind.LPAREN):
@@ -668,7 +745,13 @@ class Parser:
             self._expect(TokenKind.RPAREN)
             return expr
 
-        raise ParseError(f"unexpected token in expression: {self._cur().kind.name} ({self._cur().value!r})", loc)
+        token = self._cur()
+        raise ParseError(
+            f"unexpected token in expression: {self._token_label(token)}",
+            loc,
+            span=token.span,
+            hint="expected a literal, identifier, function call, or parenthesized expression",
+        )
 
     def _parse_init_expr(self) -> InitExpr:
         loc = self._loc()

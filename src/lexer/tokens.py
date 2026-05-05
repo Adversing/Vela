@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from src.errors import SourceLocation
+from src.errors import SourceLocation, SourceSpan
 
 
 class TokenKind(Enum):
@@ -138,6 +138,7 @@ class Token:
     kind: TokenKind
     value: str
     location: SourceLocation
+    span: SourceSpan | None = None
 
     def __repr__(self) -> str:
         return f"Token({self.kind.name}, {self.value!r}, {self.location})"

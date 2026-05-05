@@ -647,6 +647,10 @@ class Parser:
         if self._at(TokenKind.BI_SIZEOF):
             return self._parse_sizeof_expr()
 
+        # Cast<T>(expr)
+        if self._at(TokenKind.BI_CAST):
+            return self._parse_cast_expr()
+
         # Identifier or function call
         if self._at(TokenKind.IDENTIFIER):
             tok = self._advance()
@@ -699,6 +703,17 @@ class Parser:
         ty = self._parse_type_expr()
         self._expect(TokenKind.RPAREN)
         return SizeOfExpr(target_type=ty, location=loc)
+
+    def _parse_cast_expr(self) -> CastExpr:
+        loc = self._loc()
+        self._expect(TokenKind.BI_CAST)
+        self._expect(TokenKind.LT)
+        ty = self._parse_type_expr()
+        self._expect(TokenKind.GT)
+        self._expect(TokenKind.LPAREN)
+        operand = self._parse_expr()
+        self._expect(TokenKind.RPAREN)
+        return CastExpr(target_type=ty, operand=operand, location=loc)
 
     def _parse_multi_dispatch_or_set(self) -> Expr:
         loc = self._loc()

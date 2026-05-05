@@ -1,12 +1,12 @@
 module array {
     class Array {
-        I16 data;
+        Ptr<I16> data;
         [[get, visible]] I16 length;
         I16 capacity;
 
         OnAlloc(I16 cap) {
             I16 bytes = cap * 2;
-            data = Malloc(bytes);
+            data = Cast<Ptr<I16>>(Malloc(bytes));
             length = 0;
             capacity = cap;
         }

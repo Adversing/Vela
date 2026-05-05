@@ -69,6 +69,7 @@ class TestKeywords:
         ("Free",   TokenKind.BI_FREE),
         ("Init",   TokenKind.BI_INIT),
         ("SizeOf", TokenKind.BI_SIZEOF),
+        ("Cast",   TokenKind.BI_CAST),
         ("Print",  TokenKind.BI_PRINT),
     ])
     def test_builtin_keywords(self, text, expected_kind):

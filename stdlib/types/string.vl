@@ -1,9 +1,9 @@
 module string {
     class String {
-        [[get, visible]] I16 ptr;
+        [[get, visible]] Ptr<U8> ptr;
         [[get, visible]] I16 len;
 
-        OnAlloc(I16 p, I16 length) {
+        OnAlloc(Ptr<U8> p, I16 length) {
             ptr = p;
             len = length;
         }
@@ -19,7 +19,7 @@ module string {
             ret ptr[index];
         }
 
-        I8 Equals(I16 otherPtr, I16 otherLen) {
+        I8 Equals(Ptr<U8> otherPtr, I16 otherLen) {
             if (len != otherLen) {
                 ret 0;
             }

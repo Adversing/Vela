@@ -1,6 +1,6 @@
 module matrix {
     class Matrix {
-        I16 data;
+        Ptr<I16> data;
         [[get, visible]] I16 rows;
         [[get, visible]] I16 cols;
 
@@ -9,7 +9,7 @@ module matrix {
             cols = c;
             I16 total = r * c;
             I16 bytes = total * 2;
-            data = Malloc(bytes);
+            data = Cast<Ptr<I16>>(Malloc(bytes));
         }
 
         OnFree {
@@ -64,12 +64,13 @@ module matrix {
         // Returns pointer to new data buffer of size rows * otherCols
         // this must be reworked to use actual matrix accelerator hardware 
         I16 MulWith(I16 otherData, I16 otherRows, I16 otherCols) {
+            Ptr<I16> other = Cast<Ptr<I16>>(otherData);
             I16 rC = rows;
             I16 cC = otherCols;
             I16 kMax = cols;
             I16 totalC = rC * cC;
             I16 bytesC = totalC * 2;
-            I16 result = Malloc(bytesC);
+            Ptr<I16> result = Cast<Ptr<I16>>(Malloc(bytesC));
             I16 i = 0;
             while (i < rC) {
                 I16 j = 0;
@@ -82,7 +83,7 @@ module matrix {
                         I16 aVal = data[aIdx];
                         I16 bOff = k * cC;
                         I16 bIdx = bOff + j;
-                        I16 bVal = otherData[bIdx];
+                        I16 bVal = other[bIdx];
                         I16 prod = aVal * bVal;
                         acc = acc + prod;
                         k = k + 1;
@@ -94,7 +95,7 @@ module matrix {
                 }
                 i = i + 1;
             }
-            ret result;
+            ret Cast<I16>(result);
         }
 
         I16 Trace() {

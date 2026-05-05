@@ -197,6 +197,8 @@ def _emit_free() -> list[str]:
     """
     return [
         "__free:",
+        "    CMP R0, V0",
+        "    BEQ __free_null",
         "    # Prologue",
         "    SUB SP, SP, V2",
         "    SAVEM R14, [SP]",
@@ -282,5 +284,8 @@ def _emit_free() -> list[str]:
         "    ADD SP, SP, V2",
         "    MOVM R14, [SP]",
         "    ADD SP, SP, V2",
+        "    MOV PC, R14",
+        "",
+        "__free_null:",
         "    MOV PC, R14",
     ]

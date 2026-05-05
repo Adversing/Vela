@@ -34,6 +34,7 @@ class TypeChecker:
         self.functions: list[FunctionDecl] = []
         self.class_decls: dict[str, ClassDecl] = {}
         self.string_literals: list[str] = []
+        self.string_labels: dict[str, str] = {}
         self._current_func: FunctionDecl | None = None
         self._current_class: str | None = None
         self._module_resolver = module_resolver
@@ -127,7 +128,7 @@ class TypeChecker:
         # register class types in scope
         for name, cls in self.class_decls.items():
             vt = self.vtables.get(name)
-            field_tuples = tuple((f.name, self._resolve_type(f.type_expr)) for f in cls.fields)
+            field_tuples = self._collect_class_fields(name)
             method_names = tuple(m.name for m in cls.methods)
             ct = ClassType(
                 name=name, parent=cls.parent,
@@ -155,6 +156,16 @@ class TypeChecker:
                 self.globals.append((node.name, ty, node.initializer))
 
         self.scopes.pop()
+
+    def _collect_class_fields(self, class_name: str) -> tuple[tuple[str, VelaType], ...]:
+        cls = self.class_decls.get(class_name)
+        if cls is None:
+            return ()
+        fields: list[tuple[str, VelaType]] = []
+        if cls.parent and cls.parent in self.class_decls:
+            fields.extend(self._collect_class_fields(cls.parent))
+        fields.extend((f.name, self._resolve_type(f.type_expr)) for f in cls.fields)
+        return tuple(fields)
 
     def _process_imports(self, imports: list[ImportDecl]) -> None:
         """Resolve each import and check the imported module's declarations."""
@@ -194,9 +205,8 @@ class TypeChecker:
         if ct:
             self.scopes.define("this", Symbol(name="this", type=PtrType_(inner=ct), kind="param"))
         # fields accessible via self
-        for f in cls.fields:
-            ty = self._resolve_type(f.type_expr)
-            self.scopes.define(f.name, Symbol(name=f.name, type=ty, kind="var"))
+        for field_name, field_type in self._collect_class_fields(cls.name):
+            self.scopes.define(field_name, Symbol(name=field_name, type=field_type, kind="var"))
 
         if cls.on_alloc:
             self._check_function(cls.on_alloc)
@@ -306,7 +316,9 @@ class TypeChecker:
             expr.inferred_type = F16
             return F16
         if isinstance(expr, StringLiteral):
-            self.string_literals.append(expr.value)
+            if expr.value not in self.string_labels:
+                self.string_labels[expr.value] = f"__str_{len(self.string_labels) + 1}"
+                self.string_literals.append(expr.value)
             expr.inferred_type = PtrType_(inner=U8)
             return expr.inferred_type
         if isinstance(expr, CharLiteral):
@@ -442,6 +454,24 @@ class TypeChecker:
             return expr.inferred_type
         if isinstance(expr, AddressOfExpr):
             ot = self._check_expr(expr.operand)
+            if isinstance(expr.operand, IdentifierExpr):
+                sym = self.scopes.lookup(expr.operand.name)
+                is_current_field = (
+                    self._current_class is not None
+                    and any(name == expr.operand.name
+                            for name, _ in self._collect_class_fields(self._current_class))
+                )
+                if sym and not sym.is_global and not is_current_field:
+                    raise SemanticError(
+                        f"cannot take address of local or parameter '{expr.operand.name}'; "
+                        "only globals, fields, dereferences and indexed pointers are addressable",
+                        expr.location,
+                    )
+            elif not isinstance(expr.operand, (DerefExpr, FieldAccessExpr, IndexExpr)):
+                raise SemanticError(
+                    "address-of requires an addressable expression",
+                    expr.location,
+                )
             expr.inferred_type = PtrType_(inner=ot)
             return expr.inferred_type
         if isinstance(expr, InitExpr):
@@ -458,6 +488,11 @@ class TypeChecker:
         if isinstance(expr, SizeOfExpr):
             expr.inferred_type = U16
             return U16
+        if isinstance(expr, CastExpr):
+            if expr.operand:
+                self._check_expr(expr.operand)
+            expr.inferred_type = self._resolve_type(expr.target_type)
+            return expr.inferred_type
         if isinstance(expr, MultiDispatchExpr):
             for t in expr.targets:
                 self._check_expr(t)
@@ -477,6 +512,13 @@ class TypeChecker:
                 return PRIMITIVE_MAP[texpr.name]
             if texpr.name in self.class_types:
                 return PtrType_(inner=self.class_types[texpr.name])
+            if texpr.name in self.class_decls:
+                vt = self.vtables.get(texpr.name)
+                return PtrType_(inner=ClassType(
+                    name=texpr.name,
+                    parent=self.class_decls[texpr.name].parent,
+                    total_size=vt.class_size if vt else 2,
+                ))
             # forward reference - return placeholder
             return I16
         if isinstance(texpr, PtrType):

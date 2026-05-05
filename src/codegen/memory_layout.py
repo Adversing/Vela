@@ -110,9 +110,20 @@ class MemoryLayout:
             self._entries.append(DataEntry(f"__vtable_{cls_name}", total, f": {total}"))
 
     def _emit_string_literals(self) -> None:
+        for text, label in self._tc.string_labels.items():
+            if text not in self._string_pool:
+                self._string_pool[text] = label
         for text, label in self._string_pool.items():
-            escaped = text.replace('"', '\\"')
-            self._entries.append(DataEntry(label, len(text) + 1, f'= "{escaped}"'))
+            escaped = (
+                text
+                .replace("\\", "\\\\")
+                .replace("\0", "\\0")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t")
+                .replace('"', '\\"')
+            )
+            byte_size = len(text.encode("utf-8")) + 1
+            self._entries.append(DataEntry(label, byte_size, f'= "{escaped}\\0"'))
 
     def _emit_constant_pool(self) -> None:
         for value, label in self._constant_pool.items():

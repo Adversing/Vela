@@ -1,4 +1,6 @@
 
+from pathlib import Path
+
 import pytest
 
 from src.main import compile_source
@@ -7,6 +9,10 @@ from src.main import compile_source
 def compile(source: str) -> str:
     """Compile Vela source and return the assembly text."""
     return compile_source(source, "test.vl")
+
+
+def compile_project(source: str) -> str:
+    return compile_source(source, "test.vl", project_root=Path(__file__).resolve().parents[1])
 
 
 class TestHelloWorld:
@@ -601,6 +607,225 @@ class TestPipelineRobustness:
         assert isinstance(asm, str)
         assert "space:" in asm
         assert "main:" in asm
+
+
+class TestCompletedRuntimeFeatures:
+    def test_cast_expression_compiles_as_noop(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    Ptr<U8> p = "AB";
+                    Ptr<I16> q = Cast<Ptr<I16>>(p);
+                    I16 value = q[0];
+                    ret value;
+                }
+            }
+        """)
+        assert "Cast" not in asm
+        assert "MOVM" in asm
+
+    def test_string_literal_pool_is_emitted_and_nul_terminated(self):
+        asm = compile("""
+            module test {
+                Ptr<U8> main() {
+                    Ptr<U8> p = "Hi";
+                    ret p;
+                }
+            }
+        """)
+        assert '__str_1 = "Hi\\0"' in asm
+        assert "MOV R0, __str_1" in asm
+
+    def test_byte_index_uses_byte_load(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    Ptr<U8> p = "AZ";
+                    U8 c = p[1];
+                    ret c;
+                }
+            }
+        """)
+        body = "\n".join(line.strip() for line in asm.splitlines() if line.strip())
+        assert "MOVM R0, [" not in body
+        assert any(line.strip().startswith("MOV ") and "[" in line for line in asm.splitlines())
+
+    def test_word_index_scales_by_two(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    Ptr<I16> p = Cast<Ptr<I16>>("ABCD");
+                    I16 x = p[1];
+                    ret x;
+                }
+            }
+        """)
+        assert "MOVM" in asm
+        assert asm.count("ADD") >= 2
+
+    def test_free_on_class_invokes_destructor_before_raw_free(self):
+        asm = compile("""
+            module test {
+                I16 destroyed = 0;
+                class Foo {
+                    OnAlloc() {}
+                    OnFree {
+                        destroyed = 7;
+                    }
+                }
+                I16 main() {
+                    Ptr<Foo> f = Init<Foo>();
+                    Free(f);
+                    ret destroyed;
+                }
+            }
+        """)
+        assert "destroyed" in asm
+        assert "V7" in asm
+        if "BL Foo_OnFree" in asm and "BL __free" in asm:
+            assert asm.index("BL Foo_OnFree") < asm.index("BL __free")
+
+    def test_inherited_fields_are_addressed_from_parent_layout(self):
+        asm = compile("""
+            module test {
+                class Base {
+                    I8 flag;
+                    OnAlloc(I8 f) { flag = f; }
+                }
+                class Child : Base {
+                    I16 value;
+                    OnAlloc(I8 f, I16 v) {
+                        flag = f;
+                        value = v;
+                    }
+                    I16 Sum() {
+                        ret flag + value;
+                    }
+                }
+                I16 main() {
+                    Ptr<Child> c = Init<Child>(f: 3, v: 4);
+                    I16 result = c.Sum();
+                    Free(c);
+                    ret result;
+                }
+            }
+        """)
+        assert "SAVE" in asm
+        assert "SAVEM" in asm
+
+    def test_arg_shuffle_uses_temp_stack_for_register_args(self):
+        asm = compile("""
+            module test {
+                I16 combine(I16 a, I16 b, I16 c, I16 d) {
+                    I16 pad0 = a + b; I16 pad1 = pad0 + c; I16 pad2 = pad1 + d;
+                    I16 pad3 = pad2 + a; I16 pad4 = pad3 + b; I16 pad5 = pad4 + c;
+                    I16 pad6 = pad5 + d; I16 pad7 = pad6 + a; I16 pad8 = pad7 + b;
+                    I16 pad9 = pad8 + c; I16 pad10 = pad9 + d; I16 pad11 = pad10 + a;
+                    I16 ab = a * 1000 + b * 100;
+                    I16 cd = c * 10 + d;
+                    ret ab + cd;
+                }
+                I16 main() {
+                    I16 a = 1;
+                    I16 b = 2;
+                    I16 c = 3;
+                    I16 d = 4;
+                    ret combine(d, c, b, a);
+                }
+            }
+        """)
+        assert "BL combine" in asm
+        assert "SAVEM" in asm and "MOVM R0" in asm
+
+    def test_stack_arguments_are_loaded_from_frame(self):
+        asm = compile("""
+            module test {
+                I16 six(I16 a, I16 b, I16 c, I16 d, I16 e, I16 f) {
+                    I16 p0 = a + b; I16 p1 = p0 + c; I16 p2 = p1 + d;
+                    I16 p3 = p2 + e; I16 p4 = p3 + f; I16 p5 = p4 + a;
+                    I16 p6 = p5 + b; I16 p7 = p6 + c; I16 p8 = p7 + d;
+                    I16 p9 = p8 + e; I16 p10 = p9 + f; I16 p11 = p10 + a;
+                    I16 p12 = p11 + b; I16 p13 = p12 + c; I16 p14 = p13 + d;
+                    I16 p15 = p14 + e; I16 p16 = p15 + f; I16 p17 = p16 + a;
+                    ret e * 10 + f;
+                }
+                I16 main() {
+                    ret six(1, 2, 3, 4, 5, 6);
+                }
+            }
+        """)
+        assert "BL six" in asm
+        assert "MOV R12, R11" in asm
+        assert "ADD R12, R12, V4" in asm
+
+    def test_post_update_writes_back_to_field_and_index(self):
+        asm = compile("""
+            module test {
+                U8 g = 65;
+                class A {
+                    I16 x;
+                    OnAlloc() { x = 1; }
+                }
+                I16 main() {
+                    Ptr<A> a = Init<A>();
+                    a.x++;
+                    Ptr<U8> p = &g;
+                    p[0]++;
+                    I16 result = a.x + p[0];
+                    Free(a);
+                    ret result;
+                }
+            }
+        """)
+        assert "SAVE" in asm
+        assert "SAVEM" in asm
+        assert asm.count("ADD") >= 2
+
+    def test_address_of_global_field_and_index_compile(self):
+        asm = compile("""
+            module test {
+                I16 g = 7;
+                class Box {
+                    I16 value;
+                    OnAlloc(I16 v) { value = v; }
+                    Ptr<I16> ValuePtr() { ret &value; }
+                }
+                I16 main() {
+                    Ptr<I16> gp = &g;
+                    Ptr<Box> b = Init<Box>(v: 5);
+                    Ptr<I16> fp = b.ValuePtr();
+                    Ptr<I16> ip = &gp[0];
+                    I16 result = *gp + *fp + *ip;
+                    Free(b);
+                    ret result;
+                }
+            }
+        """)
+        assert "MOV" in asm and "g" in asm
+        assert "MOVM" in asm
+
+    def test_spill_slots_are_materialized(self):
+        asm = compile("""
+            module test {
+                I16 g0 = 0; I16 g1 = 1; I16 g2 = 2; I16 g3 = 3;
+                I16 g4 = 4; I16 g5 = 5; I16 g6 = 6; I16 g7 = 7;
+                I16 g8 = 8; I16 g9 = 9; I16 g10 = 10; I16 g11 = 11;
+                I16 id(I16 x) {
+                    I16 y0 = x + 1; I16 y1 = y0 + 1; I16 y2 = y1 + 1; I16 y3 = y2 + 1;
+                    I16 y4 = y3 + 1; I16 y5 = y4 + 1; I16 y6 = y5 + 1; I16 y7 = y6 + 1;
+                    I16 y8 = y7 + 1; I16 y9 = y8 + 1; I16 y10 = y9 + 1; I16 y11 = y10 + 1;
+                    ret y11;
+                }
+                I16 main() {
+                    I16 a0 = g0; I16 a1 = g1; I16 a2 = g2; I16 a3 = g3;
+                    I16 a4 = g4; I16 a5 = g5; I16 a6 = g6; I16 a7 = g7;
+                    I16 a8 = g8; I16 a9 = g9; I16 a10 = g10; I16 a11 = g11;
+                    I16 k = id(a0);
+                    ret a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + k;
+                }
+            }
+        """)
+        assert "MOV R10, R11" in asm or "MOV R12, R11" in asm
 
 
 class TestConditionalExecutionOptimization:

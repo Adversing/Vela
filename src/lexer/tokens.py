@@ -46,6 +46,7 @@ class TokenKind(Enum):
     BI_FREE = auto()
     BI_INIT = auto()
     BI_SIZEOF = auto()
+    BI_CAST = auto()
     BI_PRINT = auto()
 
     # identifiers
@@ -127,6 +128,7 @@ KEYWORDS: dict[str, TokenKind] = {
     "Free": TokenKind.BI_FREE,
     "Init": TokenKind.BI_INIT,
     "SizeOf": TokenKind.BI_SIZEOF,
+    "Cast": TokenKind.BI_CAST,
     "Print": TokenKind.BI_PRINT,
 }
 

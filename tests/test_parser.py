@@ -10,7 +10,7 @@ from src.parser.ast_nodes import (
     FreeStmt, PrintStmt,
     IntLiteral, FloatLiteral, StringLiteral, BoolLiteral, NullLiteral,
     IdentifierExpr, BinaryExpr, UnaryExpr, CallExpr, MethodCallExpr,
-    FieldAccessExpr, InitExpr, MallocExpr, SizeOfExpr,
+    FieldAccessExpr, InitExpr, MallocExpr, SizeOfExpr, CastExpr,
     NamedType, PtrType,
 )
 from src.errors import ParseError, LexerError
@@ -465,6 +465,12 @@ class TestBuiltinExpressions:
         stmts = parse_func_body("I16 f() { I16 s = SizeOf(Node); ret s; }")
         decl = stmts[0]
         assert isinstance(decl.initializer, SizeOfExpr)
+
+    def test_cast_expr(self):
+        stmts = parse_func_body("I16 f() { Ptr<I16> p = Cast<Ptr<I16>>(Malloc(4)); ret 0; }")
+        decl = stmts[0]
+        assert isinstance(decl.initializer, CastExpr)
+        assert isinstance(decl.initializer.target_type, PtrType)
 
 
 class TestParserErrors:

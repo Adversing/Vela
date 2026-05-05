@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 from src.ir.instructions import IROp, IRInstr
 
-# physical registers available for allocation
-CALLER_SAVED = ["R0", "R1", "R2", "R3", "R12"]
-CALLEE_SAVED = ["R4", "R5", "R6", "R7", "R8", "R9", "R10"]
-ALL_REGS = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7",
-            "R8", "R9", "R10", "R12"]
+# physical registers available for allocation. R8/R10/R12 are reserved as
+# code-generation scratch registers for spill materialisation and vdispatch.
+CALLER_SAVED = ["R0", "R1", "R2", "R3"]
+CALLEE_SAVED = ["R4", "R5", "R6", "R7", "R9"]
+ALL_REGS = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R9"]
 
 
 @dataclass

@@ -295,6 +295,16 @@ class TestSemanticErrors:
                 I16 main() { I16 x = 42; ret x.value; }
             """)
 
+    def test_address_of_local_rejected(self):
+        with pytest.raises(SemanticError, match="cannot take address of local"):
+            check_module("""
+                I16 main() {
+                    I16 x = 3;
+                    Ptr<I16> p = &x;
+                    ret 0;
+                }
+            """)
+
 
 class TestTypeCompatibility:
     def test_same_type_compatible(self):

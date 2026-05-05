@@ -63,55 +63,78 @@ class IRBuilder:
         """Check if name is a field of the current class."""
         if self._current_class is None:
             return False
-        return any(f.name == name for f in self._current_class.fields)
+        ct = self._tc.class_types.get(self._current_class.name)
+        return bool(ct and any(field_name == name for field_name, _ in ct.fields))
 
     def _field_offset_by_name(self, name: str) -> int:
         """Compute field byte offset from the current class."""
         if self._current_class is None:
             return 2
-        offset = 2  # skip vtable pointer
-        for f in self._current_class.fields:
-            if f.name == name:
-                return offset
-            ty = self._resolve_type(f.type_expr)
-            offset += max(ty.size(), 2)  # min 2 bytes per field
-        return 2
+        offset, _ = self._class_field_info(self._current_class.name, name)
+        return offset
 
-    def _class_field_offset(self, cls_name: str, field_name: str) -> int:
-        """Compute field byte offset for any class by name."""
+    def _storage_size(self, ty: VelaType | None) -> int:
+        return max(ty.size(), 1) if ty is not None else 2
+
+    def _is_signed_byte(self, ty: VelaType | None) -> bool:
+        return isinstance(ty, IntType) and ty.bits == 8 and ty.signed
+
+    def _class_field_info(self, cls_name: str, field_name: str) -> tuple[int, VelaType]:
         ct = self._tc.class_types.get(cls_name)
         if ct and hasattr(ct, 'fields'):
             offset = 2  # skip vtable pointer
             for fn, ft in ct.fields:
                 if fn == field_name:
-                    return offset
-                offset += max(ft.size(), 2)
-        return 2  # fallback: right after vtable ptr
+                    return offset, ft
+                offset += self._storage_size(ft)
+        return 2, I16
+
+    def _class_field_offset(self, cls_name: str, field_name: str) -> int:
+        """Compute field byte offset for any class by name."""
+        offset, _ = self._class_field_info(cls_name, field_name)
+        return offset
+
+    def _emit_load_from_addr(self, addr_reg: str, ty: VelaType | None) -> str:
+        r = self._tmp()
+        if self._storage_size(ty) == 1:
+            self._emit(IRInstr(op=IROp.LOAD_8, dest=r, src1=addr_reg, type_size=1))
+            if self._is_signed_byte(ty):
+                self._emit(IRInstr(op=IROp.SIGN_EXTEND_8, dest=r, src1=r))
+        else:
+            self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr_reg, type_size=2))
+        return r
+
+    def _emit_store_to_addr(self, val_reg: str, addr_reg: str, ty: VelaType | None) -> None:
+        if self._storage_size(ty) == 1:
+            self._emit(IRInstr(op=IROp.STORE_8, src1=val_reg, src2=addr_reg, type_size=1))
+        else:
+            self._emit(IRInstr(op=IROp.STORE_16, src1=val_reg, src2=addr_reg, type_size=2))
+
+    def _indexed_element_type(self, expr: IndexExpr) -> VelaType:
+        obj_type = getattr(expr.obj, "inferred_type", None)
+        if isinstance(obj_type, PtrType_):
+            return obj_type.inner
+        return U8
 
     def _emit_field_load(self, field_name: str) -> str:
         """Emit IR for loading self.field_name, return result register."""
         self_reg = self._locals["self"]
-        offset = self._field_offset_by_name(field_name)
-        r = self._tmp()
-        if offset == 0:
-            self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=self_reg))
-        else:
-            addr = self._tmp()
-            off_r = self._tmp()
-            self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
-            self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=self_reg, src2=off_r))
-            self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
-        return r
-
-    def _emit_field_store(self, field_name: str, val_reg: str) -> None:
-        """Emit IR for storing val_reg into self.field_name."""
-        self_reg = self._locals["self"]
-        offset = self._field_offset_by_name(field_name)
+        offset, ty = self._class_field_info(self._current_class.name, field_name) if self._current_class else (2, I16)
         addr = self._tmp()
         off_r = self._tmp()
         self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
         self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=self_reg, src2=off_r))
-        self._emit(IRInstr(op=IROp.STORE_16, src1=val_reg, src2=addr))
+        return self._emit_load_from_addr(addr, ty)
+
+    def _emit_field_store(self, field_name: str, val_reg: str) -> None:
+        """Emit IR for storing val_reg into self.field_name."""
+        self_reg = self._locals["self"]
+        offset, ty = self._class_field_info(self._current_class.name, field_name) if self._current_class else (2, I16)
+        addr = self._tmp()
+        off_r = self._tmp()
+        self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
+        self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=self_reg, src2=off_r))
+        self._emit_store_to_addr(val_reg, addr, ty)
 
     def _build_function(self, fn: FunctionDecl, cls_name: str | None = None) -> None:
         mangled = self._mangle_func(cls_name, fn.name)
@@ -129,8 +152,9 @@ class IRBuilder:
             self_vr = self._tmp()
             self._locals["self"] = self_vr
             self._locals["this"] = self_vr  # alias for tag-generated code
-            self._local_types["self"] = PtrType_(IntType(16, False))
-            self._local_types["this"] = PtrType_(IntType(16, False))
+            self_ty = self._tc.class_types.get(cls_name, ClassType(name=cls_name))
+            self._local_types["self"] = PtrType_(self_ty)
+            self._local_types["this"] = PtrType_(self_ty)
             self._emit(IRInstr(op=IROp.MOV, dest=self_vr, src1="__arg0"))
             param_offset = 1
 
@@ -265,29 +289,42 @@ class IRBuilder:
 
         if isinstance(stmt.target, DerefExpr):
             addr_reg = self._build_expr(stmt.target.operand)
+            target_ty = getattr(stmt.target, "inferred_type", I16)
             if stmt.op != "=":
-                old = self._tmp()
-                self._emit(IRInstr(op=IROp.LOAD_16, dest=old, src1=addr_reg))
+                old = self._emit_load_from_addr(addr_reg, target_ty)
                 val_reg = self._apply_compound_op(stmt.op, old, val_reg)
-            self._emit(IRInstr(op=IROp.STORE_16, src1=val_reg, src2=addr_reg))
+            self._emit_store_to_addr(val_reg, addr_reg, target_ty)
             return
 
         if isinstance(stmt.target, FieldAccessExpr):
             obj_reg = self._build_expr(stmt.target.obj)
-            offset = self._field_offset(stmt.target)
+            offset, field_ty = self._field_info(stmt.target)
             addr = self._tmp()
             off_r = self._tmp()
             self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
             self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=obj_reg, src2=off_r))
-            self._emit(IRInstr(op=IROp.STORE_16, src1=val_reg, src2=addr))
+            if stmt.op != "=":
+                old = self._emit_load_from_addr(addr, field_ty)
+                val_reg = self._apply_compound_op(stmt.op, old, val_reg)
+            self._emit_store_to_addr(val_reg, addr, field_ty)
             return
 
         if isinstance(stmt.target, IndexExpr):
             base_reg = self._build_expr(stmt.target.obj)
             idx_reg = self._build_expr(stmt.target.index)
+            elem_ty = self._indexed_element_type(stmt.target)
             addr = self._tmp()
-            self._emit(IRInstr(op=IROp.PTR_ADD, dest=addr, src1=base_reg, src2=idx_reg))
-            self._emit(IRInstr(op=IROp.STORE_16, src1=val_reg, src2=addr))
+            self._emit(IRInstr(
+                op=IROp.PTR_ADD,
+                dest=addr,
+                src1=base_reg,
+                src2=idx_reg,
+                type_size=self._storage_size(elem_ty),
+            ))
+            if stmt.op != "=":
+                old = self._emit_load_from_addr(addr, elem_ty)
+                val_reg = self._apply_compound_op(stmt.op, old, val_reg)
+            self._emit_store_to_addr(val_reg, addr, elem_ty)
             return
 
     def _apply_compound_op(self, op: str, lhs: str, rhs: str) -> str:
@@ -434,8 +471,40 @@ class IRBuilder:
 
     def _build_free(self, stmt: FreeStmt) -> None:
         ptr = self._build_expr(stmt.expr)
+        end_label = f"__free_skip_{self._next_uid()}"
+        zero = self._tmp()
+        self._emit(IRInstr(op=IROp.CONST, dest=zero, imm=0))
+        self._emit(IRInstr(op=IROp.CMP, src1=ptr, src2=zero))
+        self._emit(IRInstr(op=IROp.BRANCH_EQ, label=end_label))
+
+        cls_name = self._free_class_name(stmt.expr)
+        if cls_name:
+            self._emit(IRInstr(op=IROp.PARAM, src1=ptr, imm=0))
+            self._emit(IRInstr(
+                op=IROp.CALL,
+                label=self._resolve_onfree_label(cls_name),
+                arg_count=1,
+            ))
+
         self._emit(IRInstr(op=IROp.PARAM, src1=ptr))
         self._emit(IRInstr(op=IROp.CALL, label="__free", arg_count=1))
+        self._emit(IRInstr(op=IROp.LABEL, label=end_label))
+
+    def _free_class_name(self, expr: Expr) -> str | None:
+        ty = getattr(expr, "inferred_type", None)
+        if isinstance(ty, PtrType_) and isinstance(ty.inner, ClassType):
+            return ty.inner.name
+        return None
+
+    def _resolve_onfree_label(self, cls_name: str) -> str:
+        cls = self._tc.class_decls.get(cls_name)
+        if cls is None:
+            return f"{cls_name}_OnFree"
+        if cls.on_free and cls.on_free.body:
+            return f"{cls_name}_OnFree"
+        if cls.parent and cls.parent in self._tc.class_decls:
+            return self._resolve_onfree_label(cls.parent)
+        return f"{cls_name}_OnFree"
 
     def _build_print(self, stmt: PrintStmt) -> None:
         val = self._build_expr(stmt.value)
@@ -467,7 +536,10 @@ class IRBuilder:
             return r
         if isinstance(expr, StringLiteral):
             r = self._tmp()
-            label = f"__str_{self._next_uid()}"
+            label = self._tc.string_labels.get(expr.value)
+            if label is None:
+                label = f"__str_{len(self._tc.string_labels) + 1}"
+                self._tc.string_labels[expr.value] = label
             self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=r, label=label))
             return r
         if isinstance(expr, CharLiteral):
@@ -516,15 +588,9 @@ class IRBuilder:
             return self._build_index(expr)
         if isinstance(expr, DerefExpr):
             addr = self._build_expr(expr.operand)
-            r = self._tmp()
-            self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
-            return r
+            return self._emit_load_from_addr(addr, getattr(expr, "inferred_type", I16))
         if isinstance(expr, AddressOfExpr):
-            if isinstance(expr.operand, IdentifierExpr):
-                r = self._tmp()
-                self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=r, label=expr.operand.name))
-                return r
-            return self._build_expr(expr.operand)
+            return self._build_address_of(expr)
         if isinstance(expr, InitExpr):
             return self._build_init(expr)
         if isinstance(expr, MallocExpr):
@@ -534,6 +600,8 @@ class IRBuilder:
             ty = self._resolve_type(expr.target_type)
             self._emit(IRInstr(op=IROp.CONST, dest=r, imm=ty.size()))
             return r
+        if isinstance(expr, CastExpr):
+            return self._build_expr(expr.operand)
         if isinstance(expr, MultiDispatchExpr):
             return self._build_multi_dispatch(expr)
 
@@ -601,6 +669,9 @@ class IRBuilder:
         return dest
 
     def _build_unary(self, expr: UnaryExpr) -> str:
+        if expr.op in ("post++", "post--"):
+            return self._build_post_update(expr)
+
         operand = self._build_expr(expr.operand)
         r = self._tmp()
         if expr.op == "-":
@@ -613,20 +684,70 @@ class IRBuilder:
             self._emit(IRInstr(op=IROp.CONST, dest=zero, imm=0))
             self._emit(IRInstr(op=IROp.CMP, src1=operand, src2=zero))
             return self._materialize_comparison("==", r)
-        if expr.op == "post++":
-            one = self._tmp()
-            self._emit(IRInstr(op=IROp.MOV, dest=r, src1=operand))
-            self._emit(IRInstr(op=IROp.CONST, dest=one, imm=1))
-            self._emit(IRInstr(op=IROp.ADD, dest=operand, src1=operand, src2=one))
-            return r
-        if expr.op == "post--":
-            one = self._tmp()
-            self._emit(IRInstr(op=IROp.MOV, dest=r, src1=operand))
-            self._emit(IRInstr(op=IROp.CONST, dest=one, imm=1))
-            self._emit(IRInstr(op=IROp.SUB, dest=operand, src1=operand, src2=one))
-            return r
         self._emit(IRInstr(op=IROp.MOV, dest=r, src1=operand))
         return r
+
+    def _build_post_update(self, expr: UnaryExpr) -> str:
+        old = self._build_expr(expr.operand)
+        result = self._tmp()
+        one = self._tmp()
+        new_value = self._tmp()
+        self._emit(IRInstr(op=IROp.MOV, dest=result, src1=old))
+        self._emit(IRInstr(op=IROp.CONST, dest=one, imm=1))
+        op = IROp.ADD if expr.op == "post++" else IROp.SUB
+        self._emit(IRInstr(op=op, dest=new_value, src1=old, src2=one))
+        self._store_lvalue(expr.operand, new_value)
+        return result
+
+    def _build_address_of(self, expr: AddressOfExpr) -> str:
+        operand = expr.operand
+        if isinstance(operand, IdentifierExpr):
+            if self._is_field_of_current_class(operand.name):
+                self_reg = self._locals["self"]
+                offset = self._field_offset_by_name(operand.name)
+                addr = self._tmp()
+                off_r = self._tmp()
+                self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
+                self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=self_reg, src2=off_r))
+                return addr
+            r = self._tmp()
+            self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=r, label=operand.name))
+            return r
+        if isinstance(operand, DerefExpr):
+            return self._build_expr(operand.operand)
+        if isinstance(operand, FieldAccessExpr):
+            return self._build_field_addr(operand)
+        if isinstance(operand, IndexExpr):
+            return self._build_index_addr(operand)
+        return self._build_expr(operand)
+
+    def _store_lvalue(self, target: Expr, value_reg: str) -> None:
+        if isinstance(target, IdentifierExpr):
+            local = self._locals.get(target.name)
+            if local is not None:
+                self._emit(IRInstr(op=IROp.MOV, dest=local, src1=value_reg))
+                return
+            if self._is_field_of_current_class(target.name):
+                self._emit_field_store(target.name, value_reg)
+                return
+            addr = self._tmp()
+            self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=addr, label=target.name))
+            sym = self._tc.scopes.lookup(target.name)
+            self._emit_store_to_addr(value_reg, addr, sym.type if sym else I16)
+            return
+        if isinstance(target, DerefExpr):
+            addr = self._build_expr(target.operand)
+            self._emit_store_to_addr(value_reg, addr, getattr(target, "inferred_type", I16))
+            return
+        if isinstance(target, FieldAccessExpr):
+            addr = self._build_field_addr(target)
+            _, field_ty = self._field_info(target)
+            self._emit_store_to_addr(value_reg, addr, field_ty)
+            return
+        if isinstance(target, IndexExpr):
+            addr = self._build_index_addr(target)
+            elem_ty = self._indexed_element_type(target)
+            self._emit_store_to_addr(value_reg, addr, elem_ty)
 
     def _build_call(self, expr: CallExpr) -> str:
         args = [self._build_expr(a) for a in expr.args]
@@ -709,43 +830,60 @@ class IRBuilder:
                            label="__free", arg_count=1))
 
     def _build_field_access(self, expr: FieldAccessExpr) -> str:
+        addr = self._build_field_addr(expr)
+        _, field_ty = self._field_info(expr)
+        return self._emit_load_from_addr(addr, field_ty)
+
+    def _build_field_addr(self, expr: FieldAccessExpr) -> str:
         obj_reg = self._build_expr(expr.obj)
-        offset = self._field_offset(expr)
-        r = self._tmp()
-        if offset == 0:
-            self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=obj_reg))
-        else:
-            addr = self._tmp()
-            off_r = self._tmp()
-            self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
-            self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=obj_reg, src2=off_r))
-            self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
-        return r
+        offset, _ = self._field_info(expr)
+        addr = self._tmp()
+        off_r = self._tmp()
+        self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
+        self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=obj_reg, src2=off_r))
+        return addr
 
     def _field_offset(self, expr: FieldAccessExpr) -> int:
         """Compute field byte offset within an object."""
+        offset, _ = self._field_info(expr)
+        return offset
+
+    def _field_info(self, expr: FieldAccessExpr) -> tuple[int, VelaType]:
+        """Compute field byte offset and type within an object."""
         obj_type = getattr(expr.obj, 'inferred_type', None)
         if isinstance(obj_type, PtrType_):
             inner = obj_type.inner
+            if isinstance(inner, ClassType):
+                return self._class_field_info(inner.name, expr.field_name)
             if hasattr(inner, 'fields'):
-                offset = 2  # skip vtable pointer
+                offset = 2
                 for fn, ft in inner.fields:
                     if fn == expr.field_name:
-                        return offset
-                    offset += max(ft.size(), 1)
+                        return offset, ft
+                    offset += self._storage_size(ft)
         # fallback: use current class fields
         if self._current_class is not None:
-            return self._field_offset_by_name(expr.field_name)
-        return 2  # default: right after vtable ptr
+            return self._class_field_info(self._current_class.name, expr.field_name)
+        return 2, I16
 
     def _build_index(self, expr: IndexExpr) -> str:
+        addr = self._build_index_addr(expr)
+        elem_ty = self._indexed_element_type(expr)
+        return self._emit_load_from_addr(addr, elem_ty)
+
+    def _build_index_addr(self, expr: IndexExpr) -> str:
         base = self._build_expr(expr.obj)
         idx = self._build_expr(expr.index)
+        elem_ty = self._indexed_element_type(expr)
         addr = self._tmp()
-        self._emit(IRInstr(op=IROp.PTR_ADD, dest=addr, src1=base, src2=idx))
-        r = self._tmp()
-        self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
-        return r
+        self._emit(IRInstr(
+            op=IROp.PTR_ADD,
+            dest=addr,
+            src1=base,
+            src2=idx,
+            type_size=self._storage_size(elem_ty),
+        ))
+        return addr
 
     def _build_init(self, expr: InitExpr) -> str:
         vt = self._tc.vtables.get(expr.class_name)

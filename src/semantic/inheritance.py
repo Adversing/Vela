@@ -122,12 +122,9 @@ class InheritanceResolver:
                     slot_index=slot,
                 ))
 
-        # compute class size: vtable_ptr(2) + parent fields + own fields
-        size = 2  # vtable pointer
-        if cls.parent and cls.parent in self._classes:
-            parent_cls = self._classes[cls.parent]
-            for f in parent_cls.fields:
-                size += type_size_fn(f.type_expr)
+        # compute class size: parent instance layout + own fields. Class
+        # parents already include the vtable pointer and inherited fields.
+        size = parent_vtable.class_size if parent_vtable and cls.parent in self._classes else 2
         for f in cls.fields:
             size += type_size_fn(f.type_expr)
         vt.class_size = size

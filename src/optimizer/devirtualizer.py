@@ -13,29 +13,71 @@ def devirtualize(
 
     Returns a new instruction list.
     """
-    # 1: build a map obj_register -> class_name
-    # from the allocation + vtable-store pattern.
-    obj_class = _infer_object_classes(instrs)
-
-    # 2: rewrite VCALLs whose receiver is in obj_class.
+    malloc_results: set[str] = set()
+    vtable_loads: dict[str, str] = {}
+    obj_class: dict[str, str] = {}
     result: list[IRInstr] = []
+
     for instr in instrs:
+        replacement: IRInstr | None = None
         if instr.op == IROp.VCALL and instr.src1 in obj_class:
             cls_name = obj_class[instr.src1]
             vt = vtables.get(cls_name)
             if vt is not None and instr.imm is not None:
-                slot = instr.imm
-                entry = _slot_lookup(vt, slot)
+                entry = _slot_lookup(vt, instr.imm)
                 if entry is not None:
-                    # devirtualize: VCALL -> CALL
-                    result.append(IRInstr(
+                    replacement = IRInstr(
                         op=IROp.CALL,
                         dest=instr.dest,
                         label=entry.mangled_name,
                         arg_count=instr.arg_count,
-                    ))
-                    continue
-        result.append(instr)
+                    )
+
+        if instr.op == IROp.ASM_INLINE:
+            malloc_results.clear()
+            vtable_loads.clear()
+            obj_class.clear()
+            result.append(replacement or instr)
+            continue
+
+        previous_dest_class = obj_class.get(instr.dest) if instr.dest else None
+        if instr.dest:
+            malloc_results.discard(instr.dest)
+            vtable_loads.pop(instr.dest, None)
+            obj_class.pop(instr.dest, None)
+
+        if (instr.op == IROp.CALL
+                and instr.label == "__malloc"
+                and instr.dest):
+            malloc_results.add(instr.dest)
+        elif (instr.op == IROp.CALL
+              and instr.dest
+              and instr.label
+              and instr.label.endswith("_OnAlloc")
+              and previous_dest_class is not None
+              and instr.label[:-len("_OnAlloc")] == previous_dest_class):
+            obj_class[instr.dest] = previous_dest_class
+
+        if (instr.op == IROp.LOAD_GLOBAL_ADDR
+                and instr.dest
+                and instr.label
+                and instr.label.startswith("__vtable_")):
+            vtable_loads[instr.dest] = instr.label
+
+        if instr.op == IROp.STORE_16 and instr.src1 and instr.src2:
+            vt_label = vtable_loads.get(instr.src1)
+            if vt_label and instr.src2 in malloc_results:
+                obj_class[instr.src2] = vt_label[len("__vtable_"):]
+
+        if instr.op == IROp.MOV and instr.dest and instr.src1:
+            if instr.src1 in obj_class:
+                obj_class[instr.dest] = obj_class[instr.src1]
+            if instr.src1 in malloc_results:
+                malloc_results.add(instr.dest)
+            if instr.src1 in vtable_loads:
+                vtable_loads[instr.dest] = vtable_loads[instr.src1]
+
+        result.append(replacement or instr)
     return result
 
 
@@ -66,11 +108,29 @@ def _infer_object_classes(instrs: list[IRInstr]) -> dict[str, str]:
     obj_class: dict[str, str] = {}
 
     for instr in instrs:
+        previous_dest_class = obj_class.get(instr.dest) if instr.dest else None
+        if instr.dest:
+            # Any write replaces the previous value in that register, so all
+            # facts about the old value must be discarded before adding facts
+            # learned from the current instruction.
+            malloc_results.discard(instr.dest)
+            vtable_loads.pop(instr.dest, None)
+            obj_class.pop(instr.dest, None)
+
         # track malloc results
         if (instr.op == IROp.CALL
                 and instr.label == "__malloc"
                 and instr.dest):
             malloc_results.add(instr.dest)
+        elif (instr.op == IROp.CALL
+              and instr.dest
+              and instr.label
+              and instr.label.endswith("_OnAlloc")
+              and previous_dest_class is not None
+              and instr.label[:-len("_OnAlloc")] == previous_dest_class):
+            # Preserve legacy/manual IR that models constructors as
+            # CALL dest=obj, Class_OnAlloc.
+            obj_class[instr.dest] = previous_dest_class
 
         # track vtable address loads
         if (instr.op == IROp.LOAD_GLOBAL_ADDR
@@ -87,17 +147,6 @@ def _infer_object_classes(instrs: list[IRInstr]) -> dict[str, str]:
                 cls_name = vt_label[len("__vtable_"):]
                 obj_class[instr.src2] = cls_name
 
-        # if a register is overwritten, invalidate our tracking for it
-        if instr.dest:
-            if instr.op not in (IROp.CALL, IROp.LOAD_GLOBAL_ADDR):
-                # the register is being reused for something else
-                malloc_results.discard(instr.dest)
-                vtable_loads.pop(instr.dest, None)
-            # CALL to __malloc is already tracked above; other CALLs that
-            # write to a tracked register invalidate the malloc tracking.
-            if instr.op == IROp.CALL and instr.label != "__malloc":
-                malloc_results.discard(instr.dest)
-
         # also propagate through MOV: if obj is MOV'd, the copy also
         # points to the same object.
         if instr.op == IROp.MOV and instr.dest and instr.src1:
@@ -105,6 +154,8 @@ def _infer_object_classes(instrs: list[IRInstr]) -> dict[str, str]:
                 obj_class[instr.dest] = obj_class[instr.src1]
             if instr.src1 in malloc_results:
                 malloc_results.add(instr.dest)
+            if instr.src1 in vtable_loads:
+                vtable_loads[instr.dest] = vtable_loads[instr.src1]
 
     return obj_class
 

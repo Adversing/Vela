@@ -21,8 +21,8 @@ def inline_functions(
     """
     result = instrs
     for _ in range(max_rounds):
-        new_result = _inline_one_pass(result, all_funcs)
-        if len(new_result) == len(result):
+        new_result, changed = _inline_one_pass(result, all_funcs)
+        if not changed:
             break  # fixpoint
         result = new_result
     return result
@@ -40,12 +40,13 @@ def _next_inline_uid() -> int:
 def _inline_one_pass(
     instrs: list[IRInstr],
     all_funcs: dict[str, list[IRInstr]],
-) -> list[IRInstr]:
+) -> tuple[list[IRInstr], bool]:
     """One pass of inlining over instrs."""
     # pre-compute eligibility
     eligible = _compute_eligible(all_funcs)
 
     result: list[IRInstr] = []
+    changed = False
     # we need to look backward for PARAM instructions that feed into the
     # CALL, so we collect them in a buffer.
     param_buffer: list[IRInstr] = []
@@ -77,6 +78,7 @@ def _inline_one_pass(
             if inlined is not None:
                 result.extend(inlined)
                 param_buffer = []
+                changed = True
                 i += 1
                 continue
 
@@ -88,7 +90,7 @@ def _inline_one_pass(
 
     # flush any trailing PARAMs (shouldn't happen in well-formed IR)
     result.extend(param_buffer)
-    return result
+    return result, changed
 
 
 def _do_inline(

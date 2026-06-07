@@ -204,9 +204,25 @@ class Parser:
             tags = self._parse_tags()
 
         if self._at(TokenKind.KW_ONALLOC):
+            if cls.on_alloc is not None:
+                token = self._cur()
+                raise ParseError(
+                    f"class '{cls.name}' has duplicate OnAlloc",
+                    token.location,
+                    span=token.span,
+                    hint="a class can define OnAlloc only once",
+                )
             cls.on_alloc = self._parse_on_alloc()
             return
         if self._at(TokenKind.KW_ONFREE):
+            if cls.on_free is not None:
+                token = self._cur()
+                raise ParseError(
+                    f"class '{cls.name}' has duplicate OnFree",
+                    token.location,
+                    span=token.span,
+                    hint="a class can define OnFree only once",
+                )
             cls.on_free = self._parse_on_free()
             return
 
@@ -256,6 +272,8 @@ class Parser:
     def _parse_on_free(self) -> FunctionDecl:
         loc = self._loc()
         self._expect(TokenKind.KW_ONFREE)
+        if self._match(TokenKind.LPAREN):
+            self._expect(TokenKind.RPAREN)
         body = self._parse_block()
         return FunctionDecl(return_type=NamedType(name="U0"), name="OnFree", params=[], body=body, location=loc)
 

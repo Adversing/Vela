@@ -5,9 +5,10 @@ from src.ir.instructions import IROp, IRInstr
 from src.ir.virtual_register import VirtualRegisterAllocator
 from src.semantic.types import (
     VelaType, FloatType, IntType, PtrType_, BoolType, VoidType, ClassType,
-    I8, U8, I16, U16, F16,
+    U0, I8, U8, I16, U16, F16,
 )
 from src.semantic.type_checker import TypeChecker
+from src.errors import CodeGenError
 
 class IRBuilder:
     """Lowers a type-checked AST into a list of IR instructions per function."""
@@ -23,6 +24,7 @@ class IRBuilder:
         self._locals: dict[str, str] = {}
         self._local_types: dict[str, VelaType] = {}
         self._module_name: str = ""
+        self._current_return_type: VelaType = U0
         # current class context for bare field resolution
         self._current_class: ClassDecl | None = None
 
@@ -79,15 +81,29 @@ class IRBuilder:
     def _is_signed_byte(self, ty: VelaType | None) -> bool:
         return isinstance(ty, IntType) and ty.bits == 8 and ty.signed
 
+    def _global_type(self, name: str) -> VelaType | None:
+        for global_name, ty, _ in self._tc.globals:
+            if global_name == name:
+                return ty
+        sym = self._tc.scopes.lookup(name)
+        return sym.type if sym and sym.kind == "var" else None
+
+    def _require_global_type(self, name: str) -> VelaType:
+        ty = self._global_type(name)
+        if ty is None:
+            raise CodeGenError(f"global variable '{name}' has no type information")
+        return ty
+
     def _class_field_info(self, cls_name: str, field_name: str) -> tuple[int, VelaType]:
         ct = self._tc.class_types.get(cls_name)
-        if ct and hasattr(ct, 'fields'):
-            offset = 2  # skip vtable pointer
-            for fn, ft in ct.fields:
-                if fn == field_name:
-                    return offset, ft
-                offset += self._storage_size(ft)
-        return 2, I16
+        if ct is None or not hasattr(ct, 'fields'):
+            raise CodeGenError(f"class '{cls_name}' has no field metadata")
+        offset = 2  # skip vtable pointer
+        for fn, ft in ct.fields:
+            if fn == field_name:
+                return offset, ft
+            offset += self._storage_size(ft)
+        raise CodeGenError(f"class '{cls_name}' has no field '{field_name}'")
 
     def _class_field_offset(self, cls_name: str, field_name: str) -> int:
         """Compute field byte offset for any class by name."""
@@ -109,6 +125,35 @@ class IRBuilder:
             self._emit(IRInstr(op=IROp.STORE_8, src1=val_reg, src2=addr_reg, type_size=1))
         else:
             self._emit(IRInstr(op=IROp.STORE_16, src1=val_reg, src2=addr_reg, type_size=2))
+
+    def _coerce_value_to_type(self, value_reg: str, ty: VelaType | None) -> str:
+        """Normalize register values that represent narrower storage types."""
+        if not isinstance(ty, IntType) or ty.bits != 8:
+            return value_reg
+
+        mask = self._tmp()
+        truncated = self._tmp()
+        self._emit(IRInstr(op=IROp.CONST, dest=mask, imm=0xFF))
+        self._emit(IRInstr(op=IROp.AND, dest=truncated, src1=value_reg, src2=mask))
+        if ty.signed:
+            self._emit(IRInstr(op=IROp.SIGN_EXTEND_8, dest=truncated, src1=truncated))
+        return truncated
+
+    def _bool_value_reg(self, expr: Expr, value_reg: str) -> str:
+        """Load Bool wrapper payload when a Bool object is used as a value."""
+        inferred = getattr(expr, "inferred_type", None)
+        if not (
+            isinstance(inferred, PtrType_)
+            and isinstance(inferred.inner, ClassType)
+            and inferred.inner.name == "Bool"
+        ):
+            return value_reg
+        offset, ty = self._class_field_info("Bool", "value")
+        addr = self._tmp()
+        off_r = self._tmp()
+        self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
+        self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=value_reg, src2=off_r))
+        return self._emit_load_from_addr(addr, ty)
 
     def _indexed_element_type(self, expr: IndexExpr) -> VelaType:
         obj_type = getattr(expr.obj, "inferred_type", None)
@@ -143,6 +188,7 @@ class IRBuilder:
         self._instrs = []
         self._locals = {}
         self._local_types = {}
+        self._current_return_type = self._resolve_type(fn.return_type)
 
         self._emit(IRInstr(op=IROp.LABEL, label=mangled))
 
@@ -165,12 +211,15 @@ class IRBuilder:
             pty = self._resolve_type(p.type_expr)
             self._local_types[p.name] = pty
             self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=f"__arg{i + param_offset}"))
+            coerced = self._coerce_value_to_type(vr, pty)
+            if coerced != vr:
+                self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=coerced))
         # build body
         for stmt in fn.body:
             self._build_stmt(stmt)
 
         # implicit return for U0 (Void) functions
-        ret_ty = self._resolve_type(fn.return_type)
+        ret_ty = self._current_return_type
         if isinstance(ret_ty, VoidType) and (not self._instrs or self._instrs[-1].op != IROp.RET):
             self._emit(IRInstr(op=IROp.RET))
 
@@ -227,6 +276,8 @@ class IRBuilder:
             self._build_print(stmt)
         elif isinstance(stmt, AsmBlock):
             self._build_asm(stmt)
+        else:
+            raise CodeGenError(f"unsupported statement node {type(stmt).__name__}")
 
     def _build_var_decl(self, stmt: VarDecl) -> None:
         vr = self._tmp()
@@ -248,6 +299,7 @@ class IRBuilder:
                 else:
                     self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=val))
             else:
+                val = self._coerce_value_to_type(val, ty)
                 self._emit(IRInstr(op=IROp.MOV, dest=vr, src1=val))
         else:
             self._emit(IRInstr(op=IROp.CONST, dest=vr, imm=0))
@@ -262,28 +314,30 @@ class IRBuilder:
                 if self._is_field_of_current_class(stmt.target.name):
                     if stmt.op != "=":
                         old = self._emit_field_load(stmt.target.name)
-                        val_reg = self._apply_compound_op(stmt.op, old, val_reg)
+                        _, field_ty = self._class_field_info(
+                            self._current_class.name,
+                            stmt.target.name,
+                        )
+                        val_reg = self._apply_compound_op(stmt.op, old, val_reg, field_ty)
                     self._emit_field_store(stmt.target.name, val_reg)
                     return
                 # global variable
                 addr = self._tmp()
                 self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=addr, label=stmt.target.name))
-                ty = self._local_types.get(stmt.target.name, I16)
-                sym = self._tc.scopes.lookup(stmt.target.name)
-                if sym:
-                    ty = sym.type
-                sz = ty.size() if ty.size() > 0 else 2
+                ty = self._require_global_type(stmt.target.name)
                 if stmt.op != "=":
-                    old = self._tmp()
-                    load_op = IROp.LOAD_8 if sz == 1 else IROp.LOAD_16
-                    self._emit(IRInstr(op=load_op, dest=old, src1=addr))
-                    val_reg = self._apply_compound_op(stmt.op, old, val_reg)
-                store_op = IROp.STORE_8 if sz == 1 else IROp.STORE_16
-                self._emit(IRInstr(op=store_op, src1=val_reg, src2=addr, type_size=sz))
+                    old = self._emit_load_from_addr(addr, ty)
+                    val_reg = self._apply_compound_op(stmt.op, old, val_reg, ty)
+                self._emit_store_to_addr(val_reg, addr, ty)
                 return
 
             if stmt.op != "=":
-                val_reg = self._apply_compound_op(stmt.op, target_vr, val_reg)
+                target_ty = self._local_types.get(stmt.target.name)
+                val_reg = self._apply_compound_op(stmt.op, target_vr, val_reg, target_ty)
+            val_reg = self._coerce_value_to_type(
+                val_reg,
+                self._local_types.get(stmt.target.name),
+            )
             self._emit(IRInstr(op=IROp.MOV, dest=target_vr, src1=val_reg))
             return
 
@@ -292,7 +346,7 @@ class IRBuilder:
             target_ty = getattr(stmt.target, "inferred_type", I16)
             if stmt.op != "=":
                 old = self._emit_load_from_addr(addr_reg, target_ty)
-                val_reg = self._apply_compound_op(stmt.op, old, val_reg)
+                val_reg = self._apply_compound_op(stmt.op, old, val_reg, target_ty)
             self._emit_store_to_addr(val_reg, addr_reg, target_ty)
             return
 
@@ -305,7 +359,7 @@ class IRBuilder:
             self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=obj_reg, src2=off_r))
             if stmt.op != "=":
                 old = self._emit_load_from_addr(addr, field_ty)
-                val_reg = self._apply_compound_op(stmt.op, old, val_reg)
+                val_reg = self._apply_compound_op(stmt.op, old, val_reg, field_ty)
             self._emit_store_to_addr(val_reg, addr, field_ty)
             return
 
@@ -323,20 +377,42 @@ class IRBuilder:
             ))
             if stmt.op != "=":
                 old = self._emit_load_from_addr(addr, elem_ty)
-                val_reg = self._apply_compound_op(stmt.op, old, val_reg)
+                val_reg = self._apply_compound_op(stmt.op, old, val_reg, elem_ty)
             self._emit_store_to_addr(val_reg, addr, elem_ty)
             return
 
-    def _apply_compound_op(self, op: str, lhs: str, rhs: str) -> str:
+    def _apply_compound_op(
+        self,
+        op: str,
+        lhs: str,
+        rhs: str,
+        result_ty: VelaType | None,
+    ) -> str:
         result = self._tmp()
-        op_map = {"+=": IROp.ADD, "-=": IROp.SUB, "*=": IROp.MUL, "/=": IROp.DIV}
+        op_map = {
+            "+=": IROp.ADD,
+            "-=": IROp.SUB,
+            "*=": IROp.MUL,
+            "/=": self._division_op(result_ty),
+        }
         ir_op = op_map.get(op, IROp.ADD)
         self._emit(IRInstr(op=ir_op, dest=result, src1=lhs, src2=rhs))
-        return result
+        return self._coerce_value_to_type(result, result_ty)
+
+    def _division_op(self, result_ty: VelaType | None) -> IROp:
+        if isinstance(result_ty, IntType) and not result_ty.signed:
+            return IROp.UDIV
+        return IROp.DIV
+
+    def _modulo_op(self, result_ty: VelaType | None) -> IROp:
+        if isinstance(result_ty, IntType) and not result_ty.signed:
+            return IROp.UMOD
+        return IROp.MOD
 
     def _build_return(self, stmt: ReturnStmt) -> None:
         if stmt.value:
             val = self._build_expr(stmt.value)
+            val = self._coerce_value_to_type(val, self._current_return_type)
             self._emit(IRInstr(op=IROp.RET, src1=val))
         else:
             self._emit(IRInstr(op=IROp.RET))
@@ -360,26 +436,32 @@ class IRBuilder:
             self._emit(IRInstr(op=IROp.LABEL, label=end_label))
 
     def _build_for(self, stmt: ForStmt) -> None:
+        saved_locals = dict(self._locals)
+        saved_local_types = dict(self._local_types)
         uid = self._next_uid()
         cond_label = f"__for_{uid}_cond"
         end_label = f"__for_{uid}_end"
 
-        if stmt.init:
-            self._build_stmt(stmt.init)
+        try:
+            if stmt.init:
+                self._build_stmt(stmt.init)
 
-        self._emit(IRInstr(op=IROp.LABEL, label=cond_label))
+            self._emit(IRInstr(op=IROp.LABEL, label=cond_label))
 
-        if stmt.condition:
-            self._build_condition(stmt.condition, end_label)
+            if stmt.condition:
+                self._build_condition(stmt.condition, end_label)
 
-        for s in stmt.body:
-            self._build_stmt(s)
+            for s in stmt.body:
+                self._build_stmt(s)
 
-        if stmt.update:
-            self._build_stmt(stmt.update)
+            if stmt.update:
+                self._build_stmt(stmt.update)
 
-        self._emit(IRInstr(op=IROp.BRANCH, label=cond_label))
-        self._emit(IRInstr(op=IROp.LABEL, label=end_label))
+            self._emit(IRInstr(op=IROp.BRANCH, label=cond_label))
+            self._emit(IRInstr(op=IROp.LABEL, label=end_label))
+        finally:
+            self._locals = saved_locals
+            self._local_types = saved_local_types
 
     def _build_while(self, stmt: WhileStmt) -> None:
         uid = self._next_uid()
@@ -404,6 +486,8 @@ class IRBuilder:
             if expr.op in ("==", "!=", "<", ">", "<=", ">="):
                 l = self._build_expr(expr.left)
                 r = self._build_expr(expr.right)
+                l = self._bool_value_reg(expr.left, l)
+                r = self._bool_value_reg(expr.right, r)
                 is_float = (
                     isinstance(getattr(expr.left, 'inferred_type', None), FloatType) or
                     isinstance(getattr(expr.right, 'inferred_type', None), FloatType)
@@ -411,10 +495,11 @@ class IRBuilder:
                 cmp_op = IROp.FCMP if is_float else IROp.CMP
                 self._emit(IRInstr(op=cmp_op, src1=l, src2=r))
                 # branch on inverse condition
-                inv = {"==": IROp.BRANCH_NE, "!=": IROp.BRANCH_EQ,
-                       "<": IROp.BRANCH_GE, ">": IROp.BRANCH_LE,
-                       "<=": IROp.BRANCH_GT, ">=": IROp.BRANCH_LT}
-                self._emit(IRInstr(op=inv[expr.op], label=false_label))
+                unsigned = (not is_float) and self._comparison_uses_unsigned(expr)
+                self._emit(IRInstr(
+                    op=self._comparison_branch(expr.op, unsigned=unsigned, invert=True),
+                    label=false_label,
+                ))
                 return
         if isinstance(expr, UnaryExpr) and expr.op == "!":
             # invert: jump to false_label if inner is TRUE
@@ -430,18 +515,7 @@ class IRBuilder:
         inferred = getattr(expr, 'inferred_type', None)
         if (isinstance(inferred, PtrType_) and isinstance(inferred.inner, ClassType)
                 and inferred.inner.name == "Bool"):
-            # value is at field offset within the Bool object
-            offset = self._class_field_offset("Bool", "value")
-            r = self._tmp()
-            if offset == 0:
-                self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=val))
-            else:
-                addr = self._tmp()
-                off_r = self._tmp()
-                self._emit(IRInstr(op=IROp.CONST, dest=off_r, imm=offset))
-                self._emit(IRInstr(op=IROp.ADD, dest=addr, src1=val, src2=off_r))
-                self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
-            val = r
+            val = self._bool_value_reg(expr, val)
         zero = self._tmp()
         self._emit(IRInstr(op=IROp.CONST, dest=zero, imm=0))
         self._emit(IRInstr(op=IROp.CMP, src1=val, src2=zero))
@@ -468,6 +542,34 @@ class IRBuilder:
         self._build_condition(expr, skip)
         self._emit(IRInstr(op=IROp.BRANCH, label=true_label))
         self._emit(IRInstr(op=IROp.LABEL, label=skip))
+
+    def _build_logical_value(self, expr: BinaryExpr) -> str:
+        """Build short-circuiting logical expression and materialize 0/1."""
+        result = self._tmp()
+        uid = self._next_uid()
+        false_label = f"__logic_{uid}_false"
+        true_label = f"__logic_{uid}_true"
+        end_label = f"__logic_{uid}_end"
+
+        if expr.op == "&&":
+            self._build_condition(expr.left, false_label)
+            self._build_condition(expr.right, false_label)
+            self._emit(IRInstr(op=IROp.CONST, dest=result, imm=1))
+            self._emit(IRInstr(op=IROp.BRANCH, label=end_label))
+            self._emit(IRInstr(op=IROp.LABEL, label=false_label))
+            self._emit(IRInstr(op=IROp.CONST, dest=result, imm=0))
+            self._emit(IRInstr(op=IROp.LABEL, label=end_label))
+            return result
+
+        self._build_condition_true(expr.left, true_label)
+        self._build_condition(expr.right, false_label)
+        self._emit(IRInstr(op=IROp.LABEL, label=true_label))
+        self._emit(IRInstr(op=IROp.CONST, dest=result, imm=1))
+        self._emit(IRInstr(op=IROp.BRANCH, label=end_label))
+        self._emit(IRInstr(op=IROp.LABEL, label=false_label))
+        self._emit(IRInstr(op=IROp.CONST, dest=result, imm=0))
+        self._emit(IRInstr(op=IROp.LABEL, label=end_label))
+        return result
 
     def _build_free(self, stmt: FreeStmt) -> None:
         ptr = self._build_expr(stmt.expr)
@@ -513,17 +615,41 @@ class IRBuilder:
     def _build_asm(self, stmt: AsmBlock) -> None:
         # load inputs
         for binding in stmt.inputs:
-            src = self._locals.get(binding.variable, binding.variable)
+            src = self._load_asm_binding(binding.variable)
             self._emit(IRInstr(op=IROp.MOV, dest=binding.register, src1=src))
         # emit inline assembly
         self._emit(IRInstr(op=IROp.ASM_INLINE, asm_lines=stmt.body))
         # store outputs
         for binding in stmt.outputs:
-            dest = self._locals.get(binding.variable)
-            if dest is None:
-                dest = self._tmp()
-                self._locals[binding.variable] = dest
-            self._emit(IRInstr(op=IROp.MOV, dest=dest, src1=binding.register))
+            self._store_asm_binding(binding.variable, binding.register)
+
+    def _load_asm_binding(self, name: str) -> str:
+        local = self._locals.get(name)
+        if local is not None:
+            return local
+        if self._is_field_of_current_class(name):
+            return self._emit_field_load(name)
+        ty = self._global_type(name)
+        if ty is not None:
+            addr = self._tmp()
+            self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=addr, label=name))
+            return self._emit_load_from_addr(addr, ty)
+        return name
+
+    def _store_asm_binding(self, name: str, src_reg: str) -> None:
+        local = self._locals.get(name)
+        if local is not None:
+            value = self._coerce_value_to_type(src_reg, self._local_types.get(name))
+            self._emit(IRInstr(op=IROp.MOV, dest=local, src1=value))
+            return
+        if self._is_field_of_current_class(name):
+            self._emit_field_store(name, src_reg)
+            return
+        ty = self._global_type(name)
+        if ty is not None:
+            addr = self._tmp()
+            self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=addr, label=name))
+            self._emit_store_to_addr(src_reg, addr, ty)
 
     def _build_expr(self, expr: Expr) -> str:
         if isinstance(expr, IntLiteral):
@@ -562,17 +688,10 @@ class IRBuilder:
             if self._is_field_of_current_class(expr.name):
                 return self._emit_field_load(expr.name)
             # global variable - load from memory
-            sym = self._tc.scopes.lookup(expr.name)
-            r = self._tmp()
+            ty = self._require_global_type(expr.name)
             addr = self._tmp()
             self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=addr, label=expr.name))
-            if sym and sym.type.size() == 1:
-                self._emit(IRInstr(op=IROp.LOAD_8, dest=r, src1=addr, type_size=1))
-                if isinstance(sym.type, IntType) and sym.type.signed:
-                    self._emit(IRInstr(op=IROp.SIGN_EXTEND_8, dest=r, src1=r))
-            else:
-                self._emit(IRInstr(op=IROp.LOAD_16, dest=r, src1=addr))
-            return r
+            return self._emit_load_from_addr(addr, ty)
 
         if isinstance(expr, BinaryExpr):
             return self._build_binary(expr)
@@ -601,16 +720,17 @@ class IRBuilder:
             self._emit(IRInstr(op=IROp.CONST, dest=r, imm=ty.size()))
             return r
         if isinstance(expr, CastExpr):
-            return self._build_expr(expr.operand)
+            value = self._build_expr(expr.operand)
+            return self._coerce_value_to_type(value, self._resolve_type(expr.target_type))
         if isinstance(expr, MultiDispatchExpr):
             return self._build_multi_dispatch(expr)
 
-        # fallback
-        r = self._tmp()
-        self._emit(IRInstr(op=IROp.CONST, dest=r, imm=0))
-        return r
+        raise CodeGenError(f"unsupported expression node {type(expr).__name__}")
 
     def _build_binary(self, expr: BinaryExpr) -> str:
+        if expr.op in ("&&", "||"):
+            return self._build_logical_value(expr)
+
         left = self._build_expr(expr.left)
         right = self._build_expr(expr.right)
         r = self._tmp()
@@ -626,41 +746,108 @@ class IRBuilder:
                 self._emit(IRInstr(op=fop_map[expr.op], dest=r, src1=left, src2=right))
                 return r
             if expr.op in ("==", "!=", "<", ">", "<=", ">="):
+                left = self._bool_value_reg(expr.left, left)
+                right = self._bool_value_reg(expr.right, right)
                 self._emit(IRInstr(op=IROp.FCMP, src1=left, src2=right))
-                return self._materialize_comparison(expr.op, r)
+                return self._materialize_comparison(expr.op, r, unsigned=False)
 
+        result_ty = getattr(expr, "inferred_type", None)
         op_map = {
-            "+": IROp.ADD, "-": IROp.SUB, "*": IROp.MUL, "/": IROp.DIV,
-            "%": IROp.MOD, "&": IROp.AND, "|": IROp.OR, "^": IROp.XOR,
+            "+": IROp.ADD,
+            "-": IROp.SUB,
+            "*": IROp.MUL,
+            "/": self._division_op(result_ty),
+            "%": self._modulo_op(result_ty),
+            "&": IROp.AND,
+            "|": IROp.OR,
+            "^": IROp.XOR,
         }
         if expr.op in op_map:
             self._emit(IRInstr(op=op_map[expr.op], dest=r, src1=left, src2=right))
-            return r
+            return self._coerce_value_to_type(r, result_ty)
 
         if expr.op in ("==", "!=", "<", ">", "<=", ">="):
+            left = self._bool_value_reg(expr.left, left)
+            right = self._bool_value_reg(expr.right, right)
             self._emit(IRInstr(op=IROp.CMP, src1=left, src2=right))
-            return self._materialize_comparison(expr.op, r)
-
-        if expr.op == "&&":
-            # already handled in conditions but may appear as expression
-            self._emit(IRInstr(op=IROp.AND, dest=r, src1=left, src2=right))
-            return r
-        if expr.op == "||":
-            self._emit(IRInstr(op=IROp.OR, dest=r, src1=left, src2=right))
-            return r
+            return self._materialize_comparison(
+                expr.op,
+                r,
+                unsigned=self._comparison_uses_unsigned(expr),
+            )
 
         self._emit(IRInstr(op=IROp.MOV, dest=r, src1=left))
         return r
 
-    def _materialize_comparison(self, op: str, dest: str) -> str:
+    def _comparison_uses_unsigned(self, expr: BinaryExpr) -> bool:
+        """Return True when integer comparison should use unsigned CPU flags."""
+        if expr.op not in ("<", ">", "<=", ">="):
+            return False
+
+        def unsigned_type(node: Expr) -> bool:
+            ty = getattr(node, "inferred_type", None)
+            return isinstance(ty, IntType) and not ty.signed
+
+        def signed_non_literal(node: Expr) -> bool:
+            ty = getattr(node, "inferred_type", None)
+            return (
+                isinstance(ty, IntType)
+                and ty.signed
+                and not isinstance(node, IntLiteral)
+            )
+
+        return (
+            (unsigned_type(expr.left) or unsigned_type(expr.right))
+            and not signed_non_literal(expr.left)
+            and not signed_non_literal(expr.right)
+        )
+
+    def _comparison_branch(self, op: str, *, unsigned: bool, invert: bool) -> IROp:
+        if unsigned:
+            true_map = {
+                "==": IROp.BRANCH_EQ,
+                "!=": IROp.BRANCH_NE,
+                "<": IROp.BRANCH_LO,
+                ">": IROp.BRANCH_HI,
+                "<=": IROp.BRANCH_LS,
+                ">=": IROp.BRANCH_HS,
+            }
+            false_map = {
+                "==": IROp.BRANCH_NE,
+                "!=": IROp.BRANCH_EQ,
+                "<": IROp.BRANCH_HS,
+                ">": IROp.BRANCH_LS,
+                "<=": IROp.BRANCH_HI,
+                ">=": IROp.BRANCH_LO,
+            }
+        else:
+            true_map = {
+                "==": IROp.BRANCH_EQ,
+                "!=": IROp.BRANCH_NE,
+                "<": IROp.BRANCH_LT,
+                ">": IROp.BRANCH_GT,
+                "<=": IROp.BRANCH_LE,
+                ">=": IROp.BRANCH_GE,
+            }
+            false_map = {
+                "==": IROp.BRANCH_NE,
+                "!=": IROp.BRANCH_EQ,
+                "<": IROp.BRANCH_GE,
+                ">": IROp.BRANCH_LE,
+                "<=": IROp.BRANCH_GT,
+                ">=": IROp.BRANCH_LT,
+            }
+        return (false_map if invert else true_map)[op]
+
+    def _materialize_comparison(self, op: str, dest: str, *, unsigned: bool = False) -> str:
         """After a CMP, materialise the boolean result into a register."""
         uid = self._next_uid()
         true_label = f"__cmp_{uid}_true"
         end_label = f"__cmp_{uid}_end"
-        br_map = {"==": IROp.BRANCH_EQ, "!=": IROp.BRANCH_NE,
-                  "<": IROp.BRANCH_LT, ">": IROp.BRANCH_GT,
-                  "<=": IROp.BRANCH_LE, ">=": IROp.BRANCH_GE}
-        self._emit(IRInstr(op=br_map[op], label=true_label))
+        self._emit(IRInstr(
+            op=self._comparison_branch(op, unsigned=unsigned, invert=False),
+            label=true_label,
+        ))
         self._emit(IRInstr(op=IROp.CONST, dest=dest, imm=0))
         self._emit(IRInstr(op=IROp.BRANCH, label=end_label))
         self._emit(IRInstr(op=IROp.LABEL, label=true_label))
@@ -675,11 +862,17 @@ class IRBuilder:
         operand = self._build_expr(expr.operand)
         r = self._tmp()
         if expr.op == "-":
+            if isinstance(getattr(expr.operand, "inferred_type", None), FloatType):
+                zero = self._tmp()
+                self._emit(IRInstr(op=IROp.FCONST, dest=zero, imm=0.0))
+                self._emit(IRInstr(op=IROp.FSUB, dest=r, src1=zero, src2=operand))
+                return r
             zero = self._tmp()
             self._emit(IRInstr(op=IROp.CONST, dest=zero, imm=0))
             self._emit(IRInstr(op=IROp.RSB, dest=r, src1=operand, src2=zero))
-            return r
+            return self._coerce_value_to_type(r, getattr(expr, "inferred_type", None))
         if expr.op == "!":
+            operand = self._bool_value_reg(expr.operand, operand)
             zero = self._tmp()
             self._emit(IRInstr(op=IROp.CONST, dest=zero, imm=0))
             self._emit(IRInstr(op=IROp.CMP, src1=operand, src2=zero))
@@ -725,6 +918,10 @@ class IRBuilder:
         if isinstance(target, IdentifierExpr):
             local = self._locals.get(target.name)
             if local is not None:
+                value_reg = self._coerce_value_to_type(
+                    value_reg,
+                    self._local_types.get(target.name),
+                )
                 self._emit(IRInstr(op=IROp.MOV, dest=local, src1=value_reg))
                 return
             if self._is_field_of_current_class(target.name):
@@ -732,8 +929,7 @@ class IRBuilder:
                 return
             addr = self._tmp()
             self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=addr, label=target.name))
-            sym = self._tc.scopes.lookup(target.name)
-            self._emit_store_to_addr(value_reg, addr, sym.type if sym else I16)
+            self._emit_store_to_addr(value_reg, addr, self._require_global_type(target.name))
             return
         if isinstance(target, DerefExpr):
             addr = self._build_expr(target.operand)
@@ -748,14 +944,16 @@ class IRBuilder:
             addr = self._build_index_addr(target)
             elem_ty = self._indexed_element_type(target)
             self._emit_store_to_addr(value_reg, addr, elem_ty)
+            return
+        raise CodeGenError(f"unsupported assignment target {type(target).__name__}")
 
     def _build_call(self, expr: CallExpr) -> str:
         args = [self._build_expr(a) for a in expr.args]
         for i, a in enumerate(args):
             self._emit(IRInstr(op=IROp.PARAM, src1=a, imm=i))
-        func_name = ""
-        if isinstance(expr.callee, IdentifierExpr):
-            func_name = expr.callee.name
+        if not isinstance(expr.callee, IdentifierExpr):
+            raise CodeGenError(f"unsupported call target {type(expr.callee).__name__}")
+        func_name = expr.callee.name
         r = self._tmp()
         self._emit(IRInstr(op=IROp.CALL, dest=r, label=func_name, arg_count=len(args)))
         return r
@@ -819,7 +1017,7 @@ class IRBuilder:
         # call OnAlloc(val)
         self._emit(IRInstr(op=IROp.PARAM, src1=obj, imm=0))
         self._emit(IRInstr(op=IROp.PARAM, src1=val_reg, imm=1))
-        self._emit(IRInstr(op=IROp.CALL, dest=obj,
+        self._emit(IRInstr(op=IROp.CALL,
                            label=f"{wrapper_cls}_OnAlloc", arg_count=2))
         return obj
 
@@ -864,7 +1062,7 @@ class IRBuilder:
         # fallback: use current class fields
         if self._current_class is not None:
             return self._class_field_info(self._current_class.name, expr.field_name)
-        return 2, I16
+        raise CodeGenError(f"cannot resolve field '{expr.field_name}'")
 
     def _build_index(self, expr: IndexExpr) -> str:
         addr = self._build_index_addr(expr)
@@ -899,14 +1097,15 @@ class IRBuilder:
         self._emit(IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest=vt_addr,
                            label=f"__vtable_{expr.class_name}"))
         self._emit(IRInstr(op=IROp.STORE_16, src1=vt_addr, src2=obj))
-        # call OnAlloc
-        self._emit(IRInstr(op=IROp.PARAM, src1=obj, imm=0))
-        for i, (_, val) in enumerate(expr.kwargs):
-            v = self._build_expr(val)
-            self._emit(IRInstr(op=IROp.PARAM, src1=v, imm=i + 1))
-        self._emit(IRInstr(op=IROp.CALL, dest=obj,
-                           label=f"{expr.class_name}_OnAlloc",
-                           arg_count=len(expr.kwargs) + 1))
+        cls = self._tc.class_decls.get(expr.class_name)
+        if cls is not None and cls.on_alloc is not None:
+            self._emit(IRInstr(op=IROp.PARAM, src1=obj, imm=0))
+            for i, (_, val) in enumerate(expr.kwargs):
+                v = self._build_expr(val)
+                self._emit(IRInstr(op=IROp.PARAM, src1=v, imm=i + 1))
+            self._emit(IRInstr(op=IROp.CALL,
+                               label=f"{expr.class_name}_OnAlloc",
+                               arg_count=len(expr.kwargs) + 1))
         return obj
 
     def _build_malloc(self, expr: MallocExpr) -> str:
@@ -917,10 +1116,44 @@ class IRBuilder:
         return r
 
     def _build_multi_dispatch(self, expr: MultiDispatchExpr) -> str:
+        arg_regs = [self._build_expr(arg) for arg in expr.args]
         for target in expr.targets:
             obj = self._build_expr(target)
             self._emit(IRInstr(op=IROp.PARAM, src1=obj, imm=0))
-            self._emit(IRInstr(op=IROp.CALL, label=expr.method, arg_count=1))
+            for i, arg in enumerate(arg_regs):
+                self._emit(IRInstr(op=IROp.PARAM, src1=arg, imm=i + 1))
+
+            obj_type = getattr(target, "inferred_type", None)
+            cls_name = None
+            if isinstance(obj_type, PtrType_):
+                inner = obj_type.inner
+                if hasattr(inner, "name"):
+                    cls_name = inner.name
+            elif isinstance(obj_type, ClassType):
+                cls_name = obj_type.name
+
+            call_dest = self._tmp()
+            if cls_name and cls_name in self._tc.vtables:
+                vt = self._tc.vtables[cls_name]
+                slot = vt.slot_for(expr.method)
+                if slot is not None:
+                    self._emit(IRInstr(
+                        op=IROp.VCALL,
+                        dest=call_dest,
+                        src1=obj,
+                        label=expr.method,
+                        imm=slot,
+                        arg_count=len(arg_regs) + 1,
+                    ))
+                    continue
+
+            mangled = f"{cls_name}_{expr.method}" if cls_name else expr.method
+            self._emit(IRInstr(
+                op=IROp.CALL,
+                dest=call_dest,
+                label=mangled,
+                arg_count=len(arg_regs) + 1,
+            ))
         r = self._tmp()
         self._emit(IRInstr(op=IROp.CONST, dest=r, imm=0))
         return r

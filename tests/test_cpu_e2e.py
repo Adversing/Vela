@@ -136,6 +136,27 @@ def test_examples_run_with_cpu_runner(example: str, expected: int, tmp_path: Pat
             """,
             4321,
         ),
+        (
+            """
+            module test {
+                I16 main() {
+                    Ptr<U8> a = Malloc(100);
+                    Ptr<U8> b = Malloc(100);
+                    Ptr<U8> c = Malloc(100);
+                    Free(a);
+                    Free(b);
+                    Ptr<U8> d = Malloc(180);
+                    I16 pa = Cast<I16>(a);
+                    I16 pd = Cast<I16>(d);
+                    Free(c);
+                    Free(d);
+                    if (pa == pd) { ret 1; }
+                    ret 0;
+                }
+            }
+            """,
+            1,
+        ),
     ],
 )
 def test_feature_programs_run_with_cpu_runner(source: str, expected: int, tmp_path: Path):

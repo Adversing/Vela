@@ -45,11 +45,16 @@ def compile_source(source: str, filename: str = "<stdin>",
 
     # IR generation: include imported modules so their functions/classes
     # get code generated too.
-    existing_names = {m.name for m in ast.modules}
+    def module_key(mod):
+        filename = mod.location.file if mod.location is not None else ""
+        return (filename, mod.name)
+
+    existing_modules = {module_key(m) for m in ast.modules}
     for imp_mod in checker.imported_modules:
-        if imp_mod.name not in existing_names:
+        key = module_key(imp_mod)
+        if key not in existing_modules:
             ast.modules.insert(0, imp_mod)
-            existing_names.add(imp_mod.name)
+            existing_modules.add(key)
     builder = IRBuilder(checker)
     func_ir = builder.build(ast)
 

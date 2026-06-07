@@ -84,24 +84,52 @@ class MemoryLayout:
         for name, ty, init_expr in self._tc.globals:
             size = max(ty.size(), 1)
             if isinstance(ty, FloatType) and init_expr:
-                from src.parser.ast_nodes import FloatLiteral
-                if isinstance(init_expr, FloatLiteral):
-                    self._entries.append(DataEntry(name, 2, f"= F{init_expr.value}"))
+                init_val = self._float_initializer_value(init_expr)
+                if init_val is not None:
+                    self._entries.append(DataEntry(name, 2, f"= F{init_val}"))
                     continue
             if size == 1:
                 init_val = "00000000"
                 if init_expr:
-                    from src.parser.ast_nodes import IntLiteral
-                    if isinstance(init_expr, IntLiteral):
-                        init_val = format(init_expr.value & 0xFF, '08b')
+                    value = self._int_initializer_value(init_expr)
+                    if value is not None:
+                        init_val = format(value & 0xFF, '08b')
                 self._entries.append(DataEntry(name, 1, f"= {init_val}"))
             else:
                 init_val = "0000000000000000"
                 if init_expr:
-                    from src.parser.ast_nodes import IntLiteral
-                    if isinstance(init_expr, IntLiteral):
-                        init_val = format(init_expr.value & 0xFFFF, '016b')
+                    value = self._int_initializer_value(init_expr)
+                    if value is not None:
+                        init_val = format(value & 0xFFFF, '016b')
                 self._entries.append(DataEntry(name, 2, f"= {init_val}"))
+
+    def _int_initializer_value(self, expr) -> int | None:
+        from src.parser.ast_nodes import CharLiteral, IntLiteral, UnaryExpr
+
+        if isinstance(expr, IntLiteral):
+            return expr.value
+        if isinstance(expr, CharLiteral):
+            return ord(expr.value)
+        if (
+            isinstance(expr, UnaryExpr)
+            and expr.op == "-"
+            and isinstance(expr.operand, IntLiteral)
+        ):
+            return -expr.operand.value
+        return None
+
+    def _float_initializer_value(self, expr) -> float | None:
+        from src.parser.ast_nodes import FloatLiteral, UnaryExpr
+
+        if isinstance(expr, FloatLiteral):
+            return expr.value
+        if (
+            isinstance(expr, UnaryExpr)
+            and expr.op == "-"
+            and isinstance(expr.operand, FloatLiteral)
+        ):
+            return -expr.operand.value
+        return None
 
     def _emit_vtables(self) -> None:
         for cls_name, vt in self._tc.vtables.items():

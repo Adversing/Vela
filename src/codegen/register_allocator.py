@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from src.ir.instructions import IROp, IRInstr
 
@@ -8,7 +9,9 @@ from src.ir.instructions import IROp, IRInstr
 # code-generation scratch registers for spill materialisation and vdispatch.
 CALLER_SAVED = ["R0", "R1", "R2", "R3"]
 CALLEE_SAVED = ["R4", "R5", "R6", "R7", "R9"]
+ABI_CALLEE_SAVED = {"R4", "R5", "R6", "R7", "R8", "R9", "R10"}
 ALL_REGS = ["R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R9"]
+PHYSICAL_REGS = {f"R{i}" for i in range(15)}
 
 
 @dataclass
@@ -29,14 +32,36 @@ class RegisterAllocator:
         self.spills: dict[str, int] = {}
         self._next_spill = 0
         self.callee_saved_used: set[str] = set()
+        self._reserved_regs: set[str] = set()
 
     def allocate(self, instrs: list[IRInstr], is_leaf: bool = False) -> dict[str, str]:
         """Compute virtual-to-physical register mapping."""
+        self.allocation = {}
+        self.spills = {}
+        self._next_spill = 0
+        self.callee_saved_used = set()
         self._is_leaf = is_leaf
+        self._reserved_regs = self._reserved_physical_regs(instrs)
+        self.callee_saved_used.update(self._reserved_regs & ABI_CALLEE_SAVED)
         intervals = self._compute_intervals(instrs)
         intervals.sort(key=lambda iv: iv.start)
         self._linear_scan(intervals)
         return self.allocation
+
+    def _reserved_physical_regs(self, instrs: list[IRInstr]) -> set[str]:
+        """Registers explicitly controlled by inline ASM are unavailable."""
+        reserved: set[str] = set()
+        for instr in instrs:
+            for reg in (instr.dest, instr.src1, instr.src2):
+                if reg in PHYSICAL_REGS:
+                    reserved.add(reg)
+            if instr.op == IROp.ASM_INLINE:
+                for line in instr.asm_lines:
+                    reserved.update(
+                        reg for reg in re.findall(r"\bR(?:[0-9]|1[0-4])\b", line)
+                        if reg in PHYSICAL_REGS
+                    )
+        return reserved
 
     def _compute_intervals(self, instrs: list[IRInstr]) -> list[LiveInterval]:
         first_use: dict[str, int] = {}
@@ -56,7 +81,7 @@ class RegisterAllocator:
 
         intervals: list[LiveInterval] = []
         for vreg in first_use:
-            if vreg.startswith("R") or vreg.startswith("__arg"):
+            if vreg in PHYSICAL_REGS or vreg.startswith("__arg"):
                 continue
             iv = LiveInterval(vreg=vreg, start=first_use[vreg], end=last_use[vreg])
             # check if this interval spans any call
@@ -79,7 +104,8 @@ class RegisterAllocator:
 
     def _linear_scan(self, intervals: list[LiveInterval]) -> None:
         active: list[LiveInterval] = []
-        free_regs = list(ALL_REGS)
+        available_regs = [reg for reg in ALL_REGS if reg not in self._reserved_regs]
+        free_regs = list(available_regs)
 
         for iv in intervals:
             # expire old intervals
@@ -87,7 +113,7 @@ class RegisterAllocator:
             for a in active:
                 if a.end < iv.start:
                     expired.append(a)
-                    if a.phys_reg and a.phys_reg in ALL_REGS:
+                    if a.phys_reg and a.phys_reg in available_regs:
                         free_regs.append(a.phys_reg)
             for e in expired:
                 active.remove(e)
@@ -109,18 +135,15 @@ class RegisterAllocator:
                     evicted = False
                     for a in reversed(active):
                         if a.phys_reg in CALLEE_SAVED and not a.crosses_call:
-                            # evict this one to a caller-saved or spill
+                            # This allocator emits one final location per virtual
+                            # register.  Reassigning an already-active interval
+                            # to a newly-free caller-saved register would make it
+                            # overlap with the previous owner of that register in
+                            # earlier instructions, so spill the evicted interval.
                             old_reg = a.phys_reg
-                            # try to give the evicted interval a caller-saved reg
-                            caller_free = [r for r in free_regs if r in CALLER_SAVED]
-                            if caller_free:
-                                new_reg = caller_free[0]
-                                free_regs.remove(new_reg)
-                                a.phys_reg = new_reg
-                                self.allocation[a.vreg] = new_reg
-                            else:
-                                active.remove(a)
-                                self._spill(a)
+                            active.remove(a)
+                            a.phys_reg = None
+                            self._spill(a)
                             iv.phys_reg = old_reg
                             self.allocation[iv.vreg] = old_reg
                             self.callee_saved_used.add(old_reg)

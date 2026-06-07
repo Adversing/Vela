@@ -197,6 +197,34 @@ class TestClassDecl:
         assert cls.on_free is not None
         assert cls.on_free.name == "OnFree"
 
+    def test_class_with_parenthesized_on_free(self):
+        cls = parse_single_decl("""
+            class Baz {
+                OnFree() {}
+            }
+        """)
+        assert cls.on_free is not None
+        assert cls.on_free.name == "OnFree"
+        assert cls.on_free.params == []
+
+    def test_duplicate_on_alloc_rejected(self):
+        with pytest.raises(ParseError, match="duplicate OnAlloc"):
+            parse_single_decl("""
+                class Baz {
+                    OnAlloc() {}
+                    OnAlloc(I16 v) {}
+                }
+            """)
+
+    def test_duplicate_on_free_rejected(self):
+        with pytest.raises(ParseError, match="duplicate OnFree"):
+            parse_single_decl("""
+                class Baz {
+                    OnFree {}
+                    OnFree {}
+                }
+            """)
+
     def test_class_inheritance(self):
         cls = parse_single_decl("""
             class Child : Parent {
@@ -485,6 +513,10 @@ class TestParserErrors:
     def test_unexpected_token_in_expression(self):
         with pytest.raises((ParseError, LexerError)):
             parse("module test { I16 f() { ret @; } }")
+
+    def test_invalid_numeric_literal_reports_lexer_error(self):
+        with pytest.raises(LexerError, match="invalid numeric literal"):
+            parse("module test { I16 x = 0x; }")
 
     def test_missing_module_keyword(self):
         with pytest.raises(ParseError):

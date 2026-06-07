@@ -1,9 +1,11 @@
 
 from pathlib import Path
+import re
 
 import pytest
 
 from src.main import compile_source
+from src.errors import SemanticError
 
 
 def compile(source: str) -> str:
@@ -13,6 +15,163 @@ def compile(source: str) -> str:
 
 def compile_project(source: str) -> str:
     return compile_source(source, "test.vl", project_root=Path(__file__).resolve().parents[1])
+
+
+def test_imports_with_same_declared_module_name_from_different_files_compile(tmp_path):
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_a" / "foo.vl").write_text(
+        "module util { I16 a() { ret 1; } }",
+        encoding="utf-8",
+    )
+    (tmp_path / "pkg_b" / "foo.vl").write_text(
+        "module util { I16 b() { ret 2; } }",
+        encoding="utf-8",
+    )
+
+    asm = compile_source(
+        """
+        module test {
+            import pkg_a::{foo};
+            import pkg_b::{foo};
+            I16 main() { ret a() + b(); }
+        }
+        """,
+        str(tmp_path / "main.vl"),
+        project_root=tmp_path,
+    )
+
+    assert "a:" in asm
+    assert "b:" in asm
+
+
+def test_imported_global_variable_can_be_referenced(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "config.vl").write_text(
+        "module config { I16 answer = 42; }",
+        encoding="utf-8",
+    )
+
+    asm = compile_source(
+        """
+        module test {
+            import pkg::{config};
+            I16 main() { ret answer; }
+        }
+        """,
+        str(tmp_path / "main.vl"),
+        project_root=tmp_path,
+    )
+
+    assert "answer = 0000000000101010" in asm
+    assert "MOVM" in asm
+
+
+def test_imported_alias_can_be_referenced(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "types.vl").write_text(
+        "module types { alias Word <- I16; }",
+        encoding="utf-8",
+    )
+
+    asm = compile_source(
+        """
+        module test {
+            import pkg::{types};
+            Word answer = 42;
+            I16 main() { ret answer; }
+        }
+        """,
+        str(tmp_path / "main.vl"),
+        project_root=tmp_path,
+    )
+
+    assert "answer = 0000000000101010" in asm
+
+
+def test_imported_alias_does_not_leak_to_sibling_module(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "types.vl").write_text(
+        "module types { alias Word <- I16; }",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SemanticError, match="unknown type 'Word'"):
+        compile_source(
+            """
+            module first {
+                import pkg::{types};
+                Word ok = 1;
+            }
+            module second {
+                Word bad = 2;
+            }
+            """,
+            str(tmp_path / "main.vl"),
+            project_root=tmp_path,
+        )
+
+
+def test_storeable_auto_import_conflict_is_reported(tmp_path):
+    with pytest.raises(SemanticError, match="top-level declaration 'Storeable' conflicts"):
+        compile_source(
+            """
+            module test {
+                I16 Storeable() { ret 0; }
+                class A { OnAlloc() {} }
+                I16 main() { ret 0; }
+            }
+            """,
+            str(tmp_path / "main.vl"),
+            project_root=tmp_path,
+        )
+
+
+def test_imported_functions_with_same_flat_label_are_rejected(tmp_path):
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_a" / "math.vl").write_text(
+        "module math { I16 value() { ret 1; } }",
+        encoding="utf-8",
+    )
+    (tmp_path / "pkg_b" / "math.vl").write_text(
+        "module math { I16 value() { ret 2; } }",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SemanticError, match="top-level declaration 'value' conflicts"):
+        compile_source(
+            """
+            module test {
+                import pkg_a::{math};
+                import pkg_b::{math};
+                I16 main() { ret value(); }
+            }
+            """,
+            str(tmp_path / "main.vl"),
+            project_root=tmp_path,
+        )
+
+
+def test_local_declaration_conflicting_with_imported_label_is_rejected(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "math.vl").write_text(
+        "module math { I16 value() { ret 1; } }",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SemanticError, match="top-level declaration 'value' conflicts"):
+        compile_source(
+            """
+            module test {
+                import pkg::{math};
+                I16 value() { ret 2; }
+                I16 main() { ret value(); }
+            }
+            """,
+            str(tmp_path / "main.vl"),
+            project_root=tmp_path,
+        )
 
 
 class TestHelloWorld:
@@ -118,6 +277,46 @@ class TestArithmetic:
             }
         """)
         assert "V42" in asm or "42" in asm
+
+    def test_signed_modulo_uses_signed_adjustment(self):
+        asm = compile("""
+            module test {
+                I16 rem(I16 a, I16 b) { ret a % b; }
+                I16 main() { ret rem(7, 3); }
+            }
+        """)
+        assert "# Signed modulo" in asm
+        assert "__smod_neg_" in asm
+        assert "RSB" in asm
+
+    def test_signed_modulo_by_zero_runtime_path_returns_zero(self):
+        asm = compile("""
+            module test {
+                I16 zero = 0;
+                I16 rem(I16 a, I16 b) {
+                    I16 p0 = 0; I16 p1 = 1; I16 p2 = 2; I16 p3 = 3;
+                    I16 p4 = 4; I16 p5 = 5; I16 p6 = 6; I16 p7 = 7;
+                    I16 p8 = 8; I16 p9 = 9; I16 p10 = 10; I16 p11 = 11;
+                    I16 p12 = 12; I16 p13 = 13; I16 p14 = 14; I16 p15 = 15;
+                    ret a % b;
+                }
+                I16 main() { ret rem(7, zero); }
+            }
+        """)
+        assert "__smod_zero_" in asm
+        assert "MOV" in asm and "V0" in asm
+
+    def test_float_unary_minus_uses_fp_subtract(self):
+        asm = compile("""
+            module test {
+                F16 neg(F16 x) {
+                    ret -x;
+                }
+                F16 main() { ret 0.0; }
+            }
+        """)
+        assert "FSUB" in asm
+        assert "RSB" not in asm
 
 
 class TestFunctionCalls:
@@ -264,6 +463,10 @@ class TestClassAllocation:
         # Foo has empty OnFree so it falls back to Storeable_OnFree
         assert "Storeable_OnFree:" in asm
 
+    def test_bundled_storeable_resolves_outside_project_root(self, tmp_path):
+        asm = compile_source(self.BASIC_CLASS, str(tmp_path / "program.vl"))
+        assert "Storeable_OnFree:" in asm
+
     def test_field_stored_by_offset(self):
         asm = compile(self.BASIC_CLASS)
         # Fields are stored via register + offset, no bare "val" in ASM
@@ -341,6 +544,17 @@ class TestAsmSections:
         # Only emitted when malloc/free is used
         asm = compile(self.ALLOC_PROGRAM)
         assert "__free_list_head" in asm
+
+    def test_allocator_runtime_uses_unsigned_heap_comparisons(self):
+        asm = compile(self.ALLOC_PROGRAM)
+        assert "BCS __malloc_found" in asm
+        assert "BCC __malloc_use_whole" in asm
+        assert "BCC __free_insert" in asm
+        assert "__free_coalesce_prev:" in asm
+        assert "MOV R3, R6\n    ADD R3, R3, V2\n    SAVEM R4, [R3]" in asm
+        assert "BGE __malloc_found" not in asm
+        assert "BLT __malloc_use_whole" not in asm
+        assert "BLT __free_insert" not in asm
 
     def test_minimal_program_no_runtime(self):
         """Dead runtime elimination: minimal program shouldn't include unused runtime."""
@@ -477,6 +691,47 @@ class TestGlobalVariables:
         """)
         assert "counter" in asm
 
+    def test_negative_global_integer_initializer_is_encoded(self):
+        asm = compile("""
+            module test {
+                I16 counter = -1;
+                I16 main() { ret counter; }
+            }
+        """)
+        assert "counter = 1111111111111111" in asm
+
+    def test_byte_global_initializer_and_load_use_byte_width(self):
+        asm = compile("""
+            module test {
+                I8 flag = -1;
+                I16 main() { ret flag; }
+            }
+        """)
+        assert "flag = 11111111" in asm
+        assert any(
+            line.strip().startswith("MOV ") and "[R" in line
+            for line in asm.splitlines()
+        )
+        assert "LSL" in asm and "ASR" in asm
+
+    def test_char_global_initializer_is_encoded(self):
+        asm = compile("""
+            module test {
+                U8 letter = 'A';
+                I16 main() { ret letter; }
+            }
+        """)
+        assert "letter = 01000001" in asm
+
+    def test_negative_global_float_initializer_is_encoded(self):
+        asm = compile("""
+            module test {
+                F16 temp = -1.5;
+                F16 main() { ret temp; }
+            }
+        """)
+        assert "temp = F-1.5" in asm
+
 
 class TestExamplePrograms:
     def test_hello_world(self):
@@ -610,6 +865,18 @@ class TestPipelineRobustness:
 
 
 class TestCompletedRuntimeFeatures:
+    def test_imported_module_function_is_callable(self):
+        asm = compile_project("""
+            module test {
+                import stdlib::{math};
+                I16 main() {
+                    ret Abs(5);
+                }
+            }
+        """)
+        assert "Abs:" in asm
+        assert "BL Abs" in asm or "__inl" in asm
+
     def test_cast_expression_compiles_as_noop(self):
         asm = compile("""
             module test {
@@ -650,6 +917,33 @@ class TestCompletedRuntimeFeatures:
         assert "MOVM R0, [" not in body
         assert any(line.strip().startswith("MOV ") and "[" in line for line in asm.splitlines())
 
+    def test_u8_local_update_wraps_before_return(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    U8 x = 255;
+                    x++;
+                    ret x;
+                }
+            }
+        """)
+        assert "MOV R0, V256" not in asm
+        assert "MOV R0, V0" in asm
+
+    def test_u8_arithmetic_temporary_wraps_before_comparison(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    U8 x = 255;
+                    U8 y = 1;
+                    if (x + y == 0) { ret 1; }
+                    ret 0;
+                }
+            }
+        """)
+        assert "V256" not in asm
+        assert "CMP" in asm
+
     def test_word_index_scales_by_two(self):
         asm = compile("""
             module test {
@@ -684,6 +978,27 @@ class TestCompletedRuntimeFeatures:
         assert "V7" in asm
         if "BL Foo_OnFree" in asm and "BL __free" in asm:
             assert asm.index("BL Foo_OnFree") < asm.index("BL __free")
+
+    def test_init_without_onalloc_does_not_call_missing_constructor(self):
+        asm = compile("""
+            module test {
+                I16 sink = 0;
+                class Plain {
+                    I16 value;
+                }
+                I16 main() {
+                    Ptr<Plain> p = Init<Plain>();
+                    ASM([[in]] R0 = p;) {
+                        SAVEM R0, [sink]
+                    }
+                    Free(p);
+                    ret 0;
+                }
+            }
+        """)
+        assert "Plain_OnAlloc" not in asm
+        assert "BL __malloc" in asm
+        assert "BL __free" in asm
 
     def test_inherited_fields_are_addressed_from_parent_layout(self):
         asm = compile("""
@@ -804,6 +1119,78 @@ class TestCompletedRuntimeFeatures:
         assert "MOV" in asm and "g" in asm
         assert "MOVM" in asm
 
+    def test_inline_asm_callee_saved_register_is_preserved(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    ASM() {
+                        MOV R4, V9
+                    }
+                    ret 0;
+                }
+            }
+        """)
+        assert "SAVEM R4, [SP]" in asm
+        assert "MOVM R4, [SP]" in asm
+
+    def test_inline_asm_r10_is_preserved_as_callee_saved(self):
+        asm = compile("""
+            module test {
+                I16 main() {
+                    ASM() {
+                        MOV R10, V9
+                    }
+                    ret 0;
+                }
+            }
+        """)
+        assert "SAVEM R10, [SP]" in asm
+        assert "MOVM R10, [SP]" in asm
+
+    def test_inline_asm_input_binding_survives_dead_code_elimination(self):
+        asm = compile("""
+            module test {
+                I16 g = 4;
+                I16 main() {
+                    I16 x = 0;
+                    ASM([[in]] R0 = g; [[out]] R1 = x;) {
+                        ADD R1, R0, V2
+                    }
+                    ret x;
+                }
+            }
+        """)
+        lines = [line.strip() for line in asm.splitlines()]
+        asm_matches = [
+            i for i, line in enumerate(lines)
+            if re.match(r"ADD\s+R1\s*,\s*R0\s*,", line)
+        ]
+        assert asm_matches
+        asm_idx = asm_matches[0]
+        setup_window = lines[max(0, asm_idx - 4):asm_idx]
+        assert any(re.match(r"MOV\s+R0\s*,\s*R\d+", line) for line in setup_window)
+
+    def test_inline_asm_pointer_input_prevents_scalar_replacement(self):
+        asm = compile("""
+            module test {
+                I16 sink = 0;
+                class Box {
+                    I16 value;
+                    OnAlloc() { value = 1; }
+                }
+                I16 main() {
+                    Box box = Init<Box>();
+                    ASM([[in]] R0 = box;) {
+                        SAVEM R0, [sink]
+                    }
+                    Free(box);
+                    ret 0;
+                }
+            }
+        """)
+        assert "BL __malloc" in asm
+        assert re.search(r"SAVEM\s+R0\s*,\s*\[\s*sink\s*\]", asm)
+
     def test_spill_slots_are_materialized(self):
         asm = compile("""
             module test {
@@ -850,3 +1237,22 @@ class TestConditionalExecutionOptimization:
             or ("CMP" in asm and "MOVGT" in asm and ("MOVLE" in asm or "MOVLT" in asm))
             or any(b in asm for b in ["BGT", "BLT", "BGE", "BLE", "BEQ", "BNE"])
         )
+
+    def test_unsigned_integer_comparison_uses_unsigned_conditions(self):
+        asm = compile("""
+            module test {
+                I16 gtUnsigned(U16 a, U16 b) {
+                    if (a > b) { ret 1; }
+                    ret 0;
+                }
+                I16 gtSigned(I16 a, I16 b) {
+                    if (a > b) { ret 1; }
+                    ret 0;
+                }
+                I16 main() {
+                    ret gtUnsigned(50000, 40000) + gtSigned(1, 0);
+                }
+            }
+        """)
+        assert any(op in asm for op in ("BHI", "BLS", "MOVHI", "MOVLS"))
+        assert any(op in asm for op in ("BGT", "BLE", "MOVGT", "MOVLE"))

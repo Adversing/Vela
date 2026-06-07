@@ -43,6 +43,11 @@ class InheritanceResolver:
 
     def resolve_all(self, type_size_fn) -> dict[str, VtableInfo]:
         """Build vtables for all registered classes. type_size_fn(TypeExpr) -> int."""
+        for name, cls in self._classes.items():
+            if cls.parent and cls.parent not in self._classes and cls.parent not in self._types:
+                raise SemanticError(
+                    f"class '{name}' extends unknown class or type '{cls.parent}'"
+                )
         for name in self._classes:
             self._check_cycle(name, set())
         for name, cls in self._classes.items():

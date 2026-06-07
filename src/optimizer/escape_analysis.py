@@ -9,6 +9,9 @@ def escape_analyze(instrs: list[IRInstr]) -> list[IRInstr]:
     Returns a new instruction list with non-escaping allocations
     replaced by scalar registers and the enclosing malloc/free removed.
     """
+    if any(instr.op == IROp.ASM_INLINE for instr in instrs):
+        return instrs
+
     # 1: find all allocations  (CALL __malloc -> dest register)
     allocs = _find_allocations(instrs)
     if not allocs:
@@ -123,9 +126,9 @@ def _only_param_use_is_free(
 
 
 def _find_next_call(instrs: list[IRInstr], start: int) -> IRInstr | None:
-    """Find the next CALL instruction at or after *start*."""
+    """Find the next call-like instruction at or after *start*."""
     for i in range(start, len(instrs)):
-        if instrs[i].op == IROp.CALL:
+        if instrs[i].op in (IROp.CALL, IROp.VCALL):
             return instrs[i]
         # stop if we hit a label (different basic block)
         if instrs[i].op == IROp.LABEL:
@@ -142,68 +145,89 @@ def _scalarise(
     Field accesses are recognised as:
         CONST off_reg, <offset>
         ADD   addr_reg, obj_reg, off_reg
-        STORE_16 val_reg, addr_reg        <- field write
-        LOAD_16  dest, addr_reg           <- field read
+        STORE_8/STORE_16 val_reg, addr_reg        <- field write
+        LOAD_8/LOAD_16   dest, addr_reg           <- field read
 
     They get replaced with:
         MOV __scalar_<obj>_<offset>, val_reg  (write)
         MOV dest, __scalar_<obj>_<offset>     (read)
     """
-    # build alias map (transitive: MOV a, alloc; MOV b, a -> b aliases alloc)
     aliases: dict[str, str] = {}
-    for instr in instrs:
-        if instr.op == IROp.MOV and instr.dest:
-            if instr.src1 in non_escaping:
-                aliases[instr.dest] = instr.src1
-            elif instr.src1 in aliases:
-                aliases[instr.dest] = aliases[instr.src1]
-
-    def _root(reg: str) -> str | None:
-        if reg in non_escaping:
-            return reg
-        return aliases.get(reg)
-
-    # pre-scan: track constant values for offset computation
     const_vals: dict[str, int] = {}
-    for instr in instrs:
+    addr_to_field: dict[str, tuple[str, int]] = {}
+    killed_roots: set[str] = set()
+
+    def _root(reg: str | None) -> str | None:
+        if reg is None:
+            return None
+        if reg in non_escaping and reg not in killed_roots:
+            return reg
+        root = aliases.get(reg)
+        if root in killed_roots:
+            return None
+        return root
+
+    def _clear_dest(dest: str | None) -> None:
+        if dest is None:
+            return
+        aliases.pop(dest, None)
+        const_vals.pop(dest, None)
+        addr_to_field.pop(dest, None)
+
+    def _update_facts(instr: IRInstr, *, preserve_root_dest: bool = False) -> None:
+        if instr.dest:
+            if instr.dest in non_escaping and not preserve_root_dest:
+                killed_roots.add(instr.dest)
+            _clear_dest(instr.dest)
         if instr.op == IROp.CONST and instr.dest and isinstance(instr.imm, int):
             const_vals[instr.dest] = instr.imm
+        elif instr.op == IROp.MOV and instr.dest:
+            root = _root(instr.src1)
+            if root:
+                aliases[instr.dest] = root
 
-    # track ADD results: addr_reg = obj_reg + const_offset
-    # i'll build this incrementally.
-    addr_to_field: dict[str, tuple[str, int]] = {}
-    # addr_reg -> (obj_root, offset)
+    # track which alloc regs correspond to which PARAM+CALL sequences to remove.
+    alloc_call_indices = _find_alloc_free_indices(instrs, non_escaping, {})
+    remove_indices: set[int] = set(alloc_call_indices)
 
-    # also track which instructions to remove entirely.
-    remove_indices: set[int] = set()
-
-    # first pass: identify all addr computations and mark for removal
+    # Rewrite loads/stores while maintaining live alias, constant, and address facts.
+    result: list[IRInstr] = []
     for i, instr in enumerate(instrs):
+        if i in remove_indices:
+            if instr.op == IROp.CALL and instr.label and instr.label.endswith("_OnAlloc"):
+                _update_facts(instr, preserve_root_dest=True)
+            continue
+
+        # addr = obj + constant offset.  Track only while addr remains live.
         if instr.op == IROp.ADD and instr.dest and instr.src1 and instr.src2:
             root1 = _root(instr.src1)
             root2 = _root(instr.src2)
             if root1 and instr.src2 in const_vals:
+                if instr.dest in non_escaping:
+                    killed_roots.add(instr.dest)
+                _clear_dest(instr.dest)
                 addr_to_field[instr.dest] = (root1, const_vals[instr.src2])
-                remove_indices.add(i)
-            elif root2 and instr.src1 in const_vals:
+                continue
+            if root2 and instr.src1 in const_vals:
+                if instr.dest in non_escaping:
+                    killed_roots.add(instr.dest)
+                _clear_dest(instr.dest)
                 addr_to_field[instr.dest] = (root2, const_vals[instr.src1])
-                remove_indices.add(i)
+                continue
 
-    # track which alloc regs correspond to which PARAM+CALL sequences to remove.
-    alloc_call_indices = _find_alloc_free_indices(instrs, non_escaping, aliases)
-    remove_indices.update(alloc_call_indices)
-
-    # second pass: rewrite loads/stores to scalars
-    result: list[IRInstr] = []
-    for i, instr in enumerate(instrs):
-        if i in remove_indices:
-            continue
-
-        # STORE_16 val, addr  where addr is obj+offset -> scalar write
-        if instr.op == IROp.STORE_16 and instr.src2 in addr_to_field:
+        # STORE val, addr  where addr is obj+offset -> scalar write.
+        # Byte stores must preserve CPU memory semantics by truncating to
+        # the low 8 bits; a following SIGN_EXTEND_8 still handles signed
+        # byte loads correctly.
+        if instr.op in (IROp.STORE_8, IROp.STORE_16) and instr.src2 in addr_to_field:
             obj_root, offset = addr_to_field[instr.src2]
             scalar = _scalar_name(obj_root, offset)
-            result.append(IRInstr(op=IROp.MOV, dest=scalar, src1=instr.src1))
+            if instr.op == IROp.STORE_8:
+                mask = f"{scalar}_mask"
+                result.append(IRInstr(op=IROp.CONST, dest=mask, imm=0xFF))
+                result.append(IRInstr(op=IROp.AND, dest=scalar, src1=instr.src1, src2=mask))
+            else:
+                result.append(IRInstr(op=IROp.MOV, dest=scalar, src1=instr.src1))
             continue
 
         # STORE_16 directly into obj (offset 0 = vtable ptr write)
@@ -213,11 +237,12 @@ def _scalarise(
                 # this is the vtable pointer store - just remove it
                 continue
 
-        # LOAD_16 dest, addr  where addr is obj+offset -> scalar read
-        if instr.op == IROp.LOAD_16 and instr.src1 in addr_to_field:
+        # LOAD dest, addr  where addr is obj+offset -> scalar read
+        if instr.op in (IROp.LOAD_8, IROp.LOAD_16) and instr.src1 in addr_to_field:
             obj_root, offset = addr_to_field[instr.src1]
             scalar = _scalar_name(obj_root, offset)
             result.append(IRInstr(op=IROp.MOV, dest=instr.dest, src1=scalar))
+            _update_facts(instr)
             continue
 
         # LOAD_16 directly from obj (offset 0 = vtable ptr read)
@@ -227,16 +252,6 @@ def _scalarise(
                 # vtable ptr load on a scalarised object - can be removed
                 # unless someone actually uses the vtable (which shouldn't
                 # happen after devirtualisation).
-                continue
-
-        # skip CONST instructions that only served as offsets for removed ADDs
-        if (instr.op == IROp.CONST
-                and instr.dest in const_vals
-                and instr.dest in {i.src2 for i in instrs if i.op == IROp.ADD
-                                   and i.dest in addr_to_field}):
-            # check: is this const ONLY used as an offset for scalarised
-            # accesses? if so, remove it.
-            if _register_only_used_in(instrs, instr.dest, remove_indices, addr_to_field):
                 continue
 
         # LOAD_GLOBAL_ADDR for vtable of a scalarised object - remove
@@ -255,9 +270,16 @@ def _scalarise(
             root = _root(instr.src1)
             if root:
                 # this MOV copies the (now-scalarised) pointer - skip it.
+                _update_facts(instr)
                 continue
 
         result.append(instr)
+        preserve_root_dest = (
+            instr.op == IROp.CALL
+            and instr.label is not None
+            and instr.label.endswith("_OnAlloc")
+        )
+        _update_facts(instr, preserve_root_dest=preserve_root_dest)
 
     return result
 

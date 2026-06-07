@@ -197,6 +197,11 @@ class TestIntLiterals:
         assert tok.kind == TokenKind.INT_LITERAL
         assert tok.value == "1_000"
 
+    @pytest.mark.parametrize("source", ["0x", "0X", "0x_", "0xG", "0b", "0B", "0b_", "0b2", "123_"])
+    def test_invalid_integer_literal_raises(self, source):
+        with pytest.raises(LexerError, match="invalid numeric literal"):
+            tokenize(source)
+
 
 class TestFloatLiterals:
     def test_simple_float(self):
@@ -211,6 +216,11 @@ class TestFloatLiterals:
     def test_negative_exponent(self):
         tok = first_token("2.5e-3")
         assert tok.kind == TokenKind.FLOAT_LITERAL
+
+    @pytest.mark.parametrize("source", ["1e", "1e+", "1e-", "1_.0", "1.0_"])
+    def test_invalid_float_literal_raises(self, source):
+        with pytest.raises(LexerError, match="invalid numeric literal"):
+            tokenize(source)
 
 
 class TestStringLiterals:
@@ -238,6 +248,10 @@ class TestStringLiterals:
         with pytest.raises(LexerError):
             tokenize('"unterminated')
 
+    def test_unterminated_string_escape_raises_lexer_error(self):
+        with pytest.raises(LexerError, match="unterminated string literal"):
+            tokenize('"unterminated\\')
+
 
 class TestCharLiterals:
     def test_simple_char(self):
@@ -253,6 +267,18 @@ class TestCharLiterals:
     def test_unterminated_char_raises(self):
         with pytest.raises(LexerError):
             tokenize("'a")
+
+    def test_empty_char_raises_lexer_error(self):
+        with pytest.raises(LexerError, match="empty char literal"):
+            tokenize("''")
+
+    def test_bare_opening_char_raises_lexer_error(self):
+        with pytest.raises(LexerError, match="empty char literal"):
+            tokenize("'")
+
+    def test_unterminated_char_escape_raises_lexer_error(self):
+        with pytest.raises(LexerError, match="unterminated char literal"):
+            tokenize("'\\")
 
 
 class TestBoolLiterals:

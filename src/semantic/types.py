@@ -147,10 +147,16 @@ def types_compatible(target: VelaType, source: VelaType) -> bool:
     """Check if source can be assigned to target."""
     if target == source:
         return True
-    # numeric widening
+    # numeric widening.  Signed-to-unsigned conversions are always explicit,
+    # and unsigned-to-signed is only implicit when the target has more bits and
+    # can represent every value of the source type.
     if isinstance(target, IntType) and isinstance(source, IntType):
-        return target.bits >= source.bits
-    if isinstance(target, FloatType) and isinstance(source, (IntType, FloatType)):
+        if target.signed == source.signed:
+            return target.bits >= source.bits
+        if target.signed and not source.signed:
+            return target.bits > source.bits
+        return False
+    if isinstance(target, FloatType) and isinstance(source, FloatType):
         return True
     # pointer compatibility
     if isinstance(target, PtrType_) and isinstance(source, PtrType_):

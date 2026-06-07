@@ -23,6 +23,8 @@ class IROp(Enum):
     MUL = auto()
     DIV = auto()
     MOD = auto()
+    UDIV = auto()
+    UMOD = auto()
     NEG = auto()
     RSB = auto()
 
@@ -59,6 +61,10 @@ class IROp(Enum):
     BRANCH_GE = auto()
     BRANCH_MI = auto()
     BRANCH_PL = auto()
+    BRANCH_LO = auto()  # unsigned <
+    BRANCH_HI = auto()  # unsigned >
+    BRANCH_LS = auto()  # unsigned <=
+    BRANCH_HS = auto()  # unsigned >=
 
     # functions
     CALL = auto()

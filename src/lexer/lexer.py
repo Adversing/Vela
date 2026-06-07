@@ -198,6 +198,13 @@ class Lexer:
         while not self._at_end() and self._peek() != '"':
             if self._peek() == "\\":
                 self._advance()
+                if self._at_end():
+                    raise LexerError(
+                        "unterminated string literal",
+                        loc,
+                        span=SourceSpan.from_location(loc),
+                        hint="close the string literal with a double quote",
+                    )
                 esc = self._advance()
                 buf.append({"n": "\n", "t": "\t", "\\": "\\", '"': '"', "0": "\0"}.get(esc, esc))
             else:
@@ -214,11 +221,32 @@ class Lexer:
 
     def _scan_char(self, loc: SourceLocation) -> None:
         self._advance()  # opening '
+        if self._at_end() or self._peek() == "'":
+            raise LexerError(
+                "empty char literal",
+                loc,
+                span=SourceSpan.from_location(loc),
+                hint="provide exactly one character or escape sequence",
+            )
         if self._peek() == "\\":
             self._advance()
+            if self._at_end():
+                raise LexerError(
+                    "unterminated char literal",
+                    loc,
+                    span=SourceSpan.from_location(loc),
+                    hint="complete the escape sequence and close the character literal",
+                )
             ch = self._advance()
             val = {"n": "\n", "t": "\t", "\\": "\\", "'": "'", "0": "\0"}.get(ch, ch)
         else:
+            if self._peek() == "\n":
+                raise LexerError(
+                    "unterminated char literal",
+                    loc,
+                    span=SourceSpan.from_location(loc),
+                    hint="close the character literal before the end of the line",
+                )
             val = self._advance()
         if self._at_end() or self._peek() != "'":
             raise LexerError(
@@ -237,14 +265,14 @@ class Lexer:
             self._advance(); self._advance()
             while not self._at_end() and self._peek() in "0123456789abcdefABCDEF_":
                 self._advance()
-            self._tokens.append(self._make(TokenKind.INT_LITERAL, self._src[start:self._pos], loc))
+            self._append_number_token(TokenKind.INT_LITERAL, self._src[start:self._pos], loc)
             return
         # Binary 0b
         if self._peek() == "0" and self._peek(1) in ("b", "B"):
             self._advance(); self._advance()
             while not self._at_end() and self._peek() in "01_":
                 self._advance()
-            self._tokens.append(self._make(TokenKind.INT_LITERAL, self._src[start:self._pos], loc))
+            self._append_number_token(TokenKind.INT_LITERAL, self._src[start:self._pos], loc)
             return
         # Decimal / float
         while not self._at_end() and (self._peek().isdigit() or self._peek() == "_"):
@@ -265,6 +293,32 @@ class Lexer:
                 self._advance()
         text = self._src[start:self._pos]
         kind = TokenKind.FLOAT_LITERAL if is_float else TokenKind.INT_LITERAL
+        self._append_number_token(kind, text, loc)
+
+    def _append_number_token(self, kind: TokenKind, text: str, loc: SourceLocation) -> None:
+        try:
+            if kind == TokenKind.FLOAT_LITERAL:
+                float(text)
+            elif text.startswith(("0x", "0X")):
+                int(text, 16)
+            elif text.startswith(("0b", "0B")):
+                int(text, 2)
+            else:
+                int(text, 10)
+        except ValueError:
+            span = SourceSpan(
+                file=loc.file,
+                start_line=loc.line,
+                start_column=loc.column,
+                end_line=max(loc.line, self._line),
+                end_column=max(1, self._col),
+            ).normalized()
+            raise LexerError(
+                f"invalid numeric literal {text!r}",
+                loc,
+                span=span,
+                hint="check the digits, prefix, exponent, and underscore separators",
+            )
         self._tokens.append(self._make(kind, text, loc))
 
     def _scan_identifier(self, loc: SourceLocation) -> None:

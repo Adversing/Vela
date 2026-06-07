@@ -58,6 +58,73 @@ class TestDevirtualizer(unittest.TestCase):
         vcalls = [i for i in result if i.op == IROp.VCALL]
         self.assertEqual(len(vcalls), 1)
 
+    def test_overwritten_object_register_not_devirtualized(self):
+        """A register's old class must not survive a non-object overwrite."""
+        instrs = [
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.ADD, dest="%obj", src1="%a", src2="%b"),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.VCALL, dest="%res", src1="%obj",
+                    label="Abs", imm=0, arg_count=1),
+        ]
+
+        result = devirtualize(instrs, self._make_vtables())
+
+        self.assertEqual([i for i in result if i.op == IROp.CALL and i.label == "Int_Abs"], [])
+        self.assertEqual(len([i for i in result if i.op == IROp.VCALL]), 1)
+
+    def test_reused_malloc_register_clears_previous_class(self):
+        """A new allocation in the same register is unknown until its vtable store."""
+        instrs = [
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.VCALL, dest="%res", src1="%obj",
+                    label="Abs", imm=0, arg_count=1),
+        ]
+
+        result = devirtualize(instrs, self._make_vtables())
+
+        self.assertEqual([i for i in result if i.op == IROp.CALL and i.label == "Int_Abs"], [])
+        self.assertEqual(len([i for i in result if i.op == IROp.VCALL]), 1)
+
+    def test_vcall_before_vtable_store_not_devirtualized(self):
+        """A future vtable store must not justify an earlier VCALL rewrite."""
+        instrs = [
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.VCALL, dest="%res", src1="%obj",
+                    label="Abs", imm=0, arg_count=1),
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+        ]
+
+        result = devirtualize(instrs, self._make_vtables())
+
+        self.assertEqual([i for i in result if i.op == IROp.CALL and i.label == "Int_Abs"], [])
+        self.assertEqual(len([i for i in result if i.op == IROp.VCALL]), 1)
+
+    def test_inline_asm_clears_devirtualization_facts(self):
+        """Inline ASM may mutate object memory, including the vtable slot."""
+        instrs = [
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.ASM_INLINE, asm_lines=["SAVEM R1, [R0]"]),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.VCALL, dest="%res", src1="%obj",
+                    label="Abs", imm=0, arg_count=1),
+        ]
+
+        result = devirtualize(instrs, self._make_vtables())
+
+        self.assertEqual([i for i in result if i.op == IROp.CALL and i.label == "Int_Abs"], [])
+        self.assertEqual(len([i for i in result if i.op == IROp.VCALL]), 1)
+
 
 class TestInliner(unittest.TestCase):
     """Tests for the function inlining pass."""
@@ -104,6 +171,30 @@ class TestInliner(unittest.TestCase):
         result = inline_functions(caller, func_ir)
         calls = [i for i in result if i.op == IROp.CALL and i.label == "fact"]
         self.assertEqual(len(calls), 1, "Recursive CALL should NOT be inlined")
+
+    def test_equal_length_inline_still_allows_nested_inline_round(self):
+        """Inlining must continue even when a pass preserves instruction count."""
+        func_ir = {
+            "A": [
+                IRInstr(op=IROp.LABEL, label="A"),
+                IRInstr(op=IROp.CALL, label="B", arg_count=0),
+                IRInstr(op=IROp.RET),
+            ],
+            "B": [
+                IRInstr(op=IROp.LABEL, label="B"),
+                IRInstr(op=IROp.RET),
+            ],
+        }
+        caller = [
+            IRInstr(op=IROp.PARAM, src1="%x", imm=0),
+            IRInstr(op=IROp.PARAM, src1="%y", imm=1),
+            IRInstr(op=IROp.CALL, label="A", arg_count=2),
+        ]
+
+        result = inline_functions(caller, func_ir)
+
+        calls = [i for i in result if i.op == IROp.CALL]
+        self.assertEqual(calls, [], "Nested CALL should be inlined after equal-length pass")
 
 
 class TestEscapeAnalysis(unittest.TestCase):
@@ -513,6 +604,111 @@ class TestEscapeAnalysisMultiType(unittest.TestCase):
                         if i.op == IROp.CALL and i.label == "__malloc"]
         self.assertEqual(len(malloc_calls), 0,
                          "Float malloc should be elided")
+
+    def test_byte_field_accesses_are_scalarised(self):
+        """SROA must rewrite byte fields before removing the object."""
+        instrs = [
+            IRInstr(op=IROp.LABEL, label="main"),
+            IRInstr(op=IROp.CONST, dest="%size", imm=3),
+            IRInstr(op=IROp.PARAM, src1="%size", imm=0),
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt",
+                    label="__vtable_Bool"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.CONST, dest="%off", imm=2),
+            IRInstr(op=IROp.ADD, dest="%addr", src1="%obj", src2="%off"),
+            IRInstr(op=IROp.CONST, dest="%val", imm=257),
+            IRInstr(op=IROp.STORE_8, src1="%val", src2="%addr"),
+            IRInstr(op=IROp.LOAD_8, dest="%read", src1="%addr"),
+            IRInstr(op=IROp.SIGN_EXTEND_8, dest="%signed", src1="%read"),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.CALL, dest="%_", label="__free", arg_count=1),
+            IRInstr(op=IROp.RET, src1="%signed"),
+        ]
+
+        result = escape_analyze(instrs)
+
+        malloc_calls = [i for i in result
+                        if i.op == IROp.CALL and i.label == "__malloc"]
+        free_calls = [i for i in result
+                      if i.op == IROp.CALL and i.label == "__free"]
+        self.assertEqual(malloc_calls, [], "malloc should be elided")
+        self.assertEqual(free_calls, [], "free should be elided")
+        self.assertFalse(any(i.op == IROp.STORE_8 for i in result),
+                         "byte field store should be scalarised")
+        self.assertFalse(any(i.op == IROp.LOAD_8 for i in result),
+                         "byte field load should be scalarised")
+        self.assertTrue(
+            any(i.op == IROp.AND and i.dest and "__scalar_" in i.dest
+                for i in result),
+            "byte store should truncate into a scalar register",
+        )
+        self.assertTrue(
+            any(i.op == IROp.MOV
+                and i.dest == "%read"
+                and i.src1
+                and "__scalar_" in i.src1 for i in result),
+            "byte load should read from the scalar register",
+        )
+
+    def test_scalarise_does_not_treat_overwritten_alias_as_object(self):
+        instrs = [
+            IRInstr(op=IROp.CONST, dest="%size", imm=4),
+            IRInstr(op=IROp.PARAM, src1="%size", imm=0),
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.MOV, dest="%alias", src1="%obj"),
+            IRInstr(op=IROp.ADD, dest="%alias", src1="%base", src2="%idx"),
+            IRInstr(op=IROp.STORE_16, src1="%val", src2="%alias"),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.CALL, dest="%_", label="__free", arg_count=1),
+        ]
+
+        result = escape_analyze(instrs)
+
+        self.assertTrue(any(i.op == IROp.ADD and i.dest == "%alias" for i in result))
+        self.assertTrue(any(i.op == IROp.STORE_16 and i.src2 == "%alias" for i in result))
+
+    def test_scalarise_does_not_use_overwritten_offset_constant(self):
+        instrs = [
+            IRInstr(op=IROp.CONST, dest="%size", imm=4),
+            IRInstr(op=IROp.PARAM, src1="%size", imm=0),
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.CONST, dest="%off", imm=2),
+            IRInstr(op=IROp.ADD, dest="%off", src1="%base", src2="%idx"),
+            IRInstr(op=IROp.ADD, dest="%addr", src1="%obj", src2="%off"),
+            IRInstr(op=IROp.STORE_16, src1="%val", src2="%addr"),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.CALL, dest="%_", label="__free", arg_count=1),
+        ]
+
+        result = escape_analyze(instrs)
+
+        self.assertTrue(any(i.op == IROp.ADD and i.dest == "%addr" for i in result))
+        self.assertTrue(any(i.op == IROp.STORE_16 and i.src2 == "%addr" for i in result))
+
+    def test_scalarise_does_not_use_overwritten_field_address(self):
+        instrs = [
+            IRInstr(op=IROp.CONST, dest="%size", imm=4),
+            IRInstr(op=IROp.PARAM, src1="%size", imm=0),
+            IRInstr(op=IROp.CALL, dest="%obj", label="__malloc", arg_count=1),
+            IRInstr(op=IROp.LOAD_GLOBAL_ADDR, dest="%vt", label="__vtable_Int"),
+            IRInstr(op=IROp.STORE_16, src1="%vt", src2="%obj"),
+            IRInstr(op=IROp.CONST, dest="%off", imm=2),
+            IRInstr(op=IROp.ADD, dest="%addr", src1="%obj", src2="%off"),
+            IRInstr(op=IROp.ADD, dest="%addr", src1="%base", src2="%idx"),
+            IRInstr(op=IROp.STORE_16, src1="%val", src2="%addr"),
+            IRInstr(op=IROp.PARAM, src1="%obj", imm=0),
+            IRInstr(op=IROp.CALL, dest="%_", label="__free", arg_count=1),
+        ]
+
+        result = escape_analyze(instrs)
+
+        self.assertTrue(any(i.op == IROp.ADD and i.dest == "%addr" for i in result))
+        self.assertTrue(any(i.op == IROp.STORE_16 and i.src2 == "%addr" for i in result))
 
     def test_bool_wrapper_elided(self):
         """Non-escaping Bool wrapper allocation is scalarised."""

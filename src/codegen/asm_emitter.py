@@ -7,6 +7,7 @@ from src.codegen.memory_layout import MemoryLayout
 from src.codegen.runtime import emit_runtime
 from src.semantic.type_checker import TypeChecker
 from src.optimizer.peephole import peephole_optimize
+from src.errors import CodeGenError
 
 
 class AsmEmitter:
@@ -116,8 +117,12 @@ class AsmEmitter:
         for instrs in func_ir.values():
             for instr in instrs:
                 if instr.op == IROp.CONST and isinstance(instr.imm, int):
-                    if self._layout.needs_constant_pool(instr.imm):
-                        self._layout.get_constant_label(instr.imm)
+                    raw = int(instr.imm)
+                    encoded = raw & 0xFFFF
+                    if raw < 0 and abs(raw) <= 4095:
+                        continue
+                    if encoded > 4095:
+                        self._layout.get_constant_label(encoded)
                 if instr.op == IROp.FCONST and isinstance(instr.imm, float):
                     self._layout.get_float_label(instr.imm)
                 if instr.op == IROp.LOAD_GLOBAL_ADDR and instr.label and instr.label.startswith("__str_"):
@@ -175,6 +180,9 @@ class AsmEmitter:
         # register allocation (pass is_leaf so allocator can prefer caller-saved)
         allocator = RegisterAllocator()
         alloc = allocator.allocate(instrs, is_leaf=is_leaf)
+        allocator.callee_saved_used.update(
+            self._callee_saved_scratch_used(instrs, alloc, allocator)
+        )
 
         # prologue
         prologue = emit_prologue(
@@ -233,6 +241,50 @@ class AsmEmitter:
         return any(is_stack_arg(instr.dest) or is_stack_arg(instr.src1) or is_stack_arg(instr.src2)
                    for instr in instrs)
 
+    def _callee_saved_scratch_used(
+        self,
+        instrs: list[IRInstr],
+        alloc: dict[str, str],
+        allocator: RegisterAllocator,
+    ) -> set[str]:
+        """Return callee-saved scratch registers used by emission.
+
+        The allocator does not assign R8/R10 to virtual registers, but the
+        emitter uses them as temporaries for some lowered operations.  Since
+        the ABI defines R8/R10 as callee-saved, functions that use those
+        temporaries must save and restore them in the frame.
+        """
+        used: set[str] = set()
+        src2_scratch_ops = {
+            IROp.ADD, IROp.SUB, IROp.AND, IROp.OR, IROp.XOR, IROp.BIC,
+            IROp.RSB, IROp.MUL, IROp.DIV, IROp.UDIV, IROp.MOD, IROp.UMOD,
+            IROp.SHL, IROp.SHR, IROp.ASR,
+            IROp.FADD, IROp.FSUB, IROp.FMUL, IROp.FDIV, IROp.FCMP,
+            IROp.CMP, IROp.STORE_8, IROp.STORE_16, IROp.PTR_ADD,
+            IROp.MAX, IROp.MIN,
+        }
+
+        for instr in instrs:
+            if instr.dest in allocator.spills:
+                used.add("R10")
+            if instr.op in src2_scratch_ops and self._needs_scratch_read(instr.src2, alloc):
+                used.add("R10")
+            if instr.op in (IROp.MOD, IROp.UMOD):
+                used.add("R10")
+            if instr.op in (IROp.DIV, IROp.UDIV, IROp.MOD, IROp.UMOD, IROp.PTR_ADD):
+                if instr.dest in allocator.spills:
+                    used.add("R8")
+            if instr.op == IROp.PTR_ADD and max(int(instr.type_size or 1), 1) > 2:
+                used.add("R8")
+        return used
+
+    def _needs_scratch_read(self, vreg: str | None, alloc: dict[str, str]) -> bool:
+        if vreg is None or self._is_physical_reg(vreg):
+            return False
+        if vreg.startswith("__arg"):
+            return int(vreg[5:]) >= 4
+        return alloc.get(vreg) == "__spill"
+
     def _is_physical_reg(self, value: str | None) -> bool:
         return bool(value and value.startswith("R") and value[1:].isdigit())
 
@@ -275,7 +327,10 @@ class AsmEmitter:
             return scratch
         if alloc.get(vreg) == "__spill":
             return self._load_spill(lines, allocator, vreg, scratch)
-        return alloc.get(vreg, "R0")
+        reg = alloc.get(vreg)
+        if reg is None:
+            raise CodeGenError(f"virtual register '{vreg}' has no allocation")
+        return reg
 
     def _write_reg(self, vreg: str | None, alloc: dict[str, str],
                    scratch: str = "R12") -> str:
@@ -285,10 +340,15 @@ class AsmEmitter:
             return vreg
         if vreg.startswith("__arg"):
             idx = int(vreg[5:])
-            return ARG_REGS[idx] if idx < 4 else "R0"
+            if idx < 4:
+                return ARG_REGS[idx]
+            raise CodeGenError(f"cannot write directly to stack argument '{vreg}'")
         if alloc.get(vreg) == "__spill":
             return scratch
-        return alloc.get(vreg, "R0")
+        reg = alloc.get(vreg)
+        if reg is None:
+            raise CodeGenError(f"virtual register '{vreg}' has no allocation")
+        return reg
 
     def _store_dest(self, lines: list[str], vreg: str | None,
                     value_reg: str, alloc: dict[str, str],
@@ -397,25 +457,14 @@ class AsmEmitter:
 
         if op == IROp.CONST:
             d = dreg(instr.dest)
-            val = instr.imm if instr.imm is not None else 0
-            val = int(val) & 0xFFFF
-            if val > 4095:
-                label = self._layout.get_constant_label(int(instr.imm))
+            raw = int(instr.imm if instr.imm is not None else 0)
+            val = raw & 0xFFFF
+            if raw < 0 and abs(raw) <= 4095:
+                lines.append(f"    MOV {d}, V{abs(raw)}")
+                lines.append(f"    RSB {d}, {d}, V0")
+            elif val > 4095:
+                label = self._layout.get_constant_label(val)
                 lines.append(f"    MOVM {d}, [{label}]")
-            elif int(instr.imm) < 0:
-                # use RSB: Rd = 0 - |val| → MVN or RSB
-                abs_val = abs(int(instr.imm))
-                if abs_val <= 4095:
-                    lines.append(f"    MOV {d}, V0")
-                    lines.append(f"    RSB {d}, {d}, V{abs_val}")
-                    # we want -abs. therefore the correct instr set is: MOV d, V_abs then RSB d, d, V0
-                    lines.pop()
-                    lines.pop()
-                    lines.append(f"    MOV {d}, V{abs_val}")
-                    lines.append(f"    RSB {d}, {d}, V0")
-                else:
-                    label = self._layout.get_constant_label(int(instr.imm) & 0xFFFF)
-                    lines.append(f"    MOVM {d}, [{label}]")
             else:
                 lines.append(f"    MOV {d}, V{val}")
             store(instr.dest, d)
@@ -499,30 +548,89 @@ class AsmEmitter:
             # signed division wrapper
             uid = self._next_uid()
             lines.append(f"    # Signed division")
+            lines.append(f"    CMP {s1}, V0")
+            lines.append(f"    BMI __sdiv_lhs_neg_{uid}")
+            lines.append(f"    CMP {s2}, V0")
+            lines.append(f"    BMI __sdiv_neg_{uid}")
+            lines.append(f"    B __sdiv_pos_{uid}")
+            lines.append(f"__sdiv_lhs_neg_{uid}:")
+            lines.append(f"    CMP {s2}, V0")
+            lines.append(f"    BPL __sdiv_neg_{uid}")
+            lines.append(f"__sdiv_pos_{uid}:")
             lines.append(f"    ABS R12, {s1}")
             lines.append(f"    ABS {d}, {s2}")
             lines.append(f"    DIV {d}, R12, {d}")
-            lines.append(f"    CMP {s1}, V0")
-            lines.append(f"    BMI __sdiv_check_{uid}")
-            lines.append(f"    CMP {s2}, V0")
-            lines.append(f"    BMI __sdiv_neg_{uid}")
-            lines.append(f"    B __sdiv_done_{uid}")
-            lines.append(f"__sdiv_check_{uid}:")
-            lines.append(f"    CMP {s2}, V0")
-            lines.append(f"    BPL __sdiv_neg_{uid}")
             lines.append(f"    B __sdiv_done_{uid}")
             lines.append(f"__sdiv_neg_{uid}:")
+            lines.append(f"    ABS R12, {s1}")
+            lines.append(f"    ABS {d}, {s2}")
+            lines.append(f"    DIV {d}, R12, {d}")
             lines.append(f"    RSB {d}, {d}, V0")
             lines.append(f"__sdiv_done_{uid}:")
+            store(instr.dest, d)
+
+        elif op == IROp.UDIV:
+            d = dreg(instr.dest, "R8")
+            s1 = reg(instr.src1)
+            s2 = reg(instr.src2, "R10")
+            lines.append(f"    DIV {d}, {s1}, {s2}")
             store(instr.dest, d)
 
         elif op == IROp.MOD:
             d = dreg(instr.dest, "R8")
             s1 = reg(instr.src1)
             s2 = reg(instr.src2, "R10")
-            lines.append(f"    DIV R12, {s1}, {s2}")
-            lines.append(f"    MUL R12, R12, {s2}")
-            lines.append(f"    SUB {d}, {s1}, R12")
+            uid = self._next_uid()
+            lines.append(f"    # Signed modulo")
+            lines.append(f"    CMP {s2}, V0")
+            lines.append(f"    BEQ __smod_zero_{uid}")
+            lines.append(f"    CMP {s1}, V0")
+            lines.append(f"    BMI __smod_lhs_neg_{uid}")
+            lines.append(f"    CMP {s2}, V0")
+            lines.append(f"    BMI __smod_neg_{uid}")
+            lines.append(f"    B __smod_pos_{uid}")
+            lines.append(f"__smod_lhs_neg_{uid}:")
+            lines.append(f"    CMP {s2}, V0")
+            lines.append(f"    BPL __smod_neg_{uid}")
+            lines.append(f"__smod_pos_{uid}:")
+            lines.append(f"    ABS R12, {s1}")
+            lines.append(f"    ABS {d}, {s2}")
+            lines.append(f"    DIV {d}, R12, {d}")
+            lines.append(f"    B __smod_quotient_done_{uid}")
+            lines.append(f"__smod_neg_{uid}:")
+            lines.append(f"    ABS R12, {s1}")
+            lines.append(f"    ABS {d}, {s2}")
+            lines.append(f"    DIV {d}, R12, {d}")
+            lines.append(f"    RSB {d}, {d}, V0")
+            lines.append(f"__smod_quotient_done_{uid}:")
+            s1 = reg(instr.src1)
+            s2 = reg(instr.src2, "R10")
+            product = "R10" if s1 == "R12" else "R12"
+            lines.append(f"    MUL {product}, {d}, {s2}")
+            lines.append(f"    SUB {d}, {s1}, {product}")
+            lines.append(f"    B __smod_done_{uid}")
+            lines.append(f"__smod_zero_{uid}:")
+            lines.append(f"    MOV {d}, V0")
+            lines.append(f"__smod_done_{uid}:")
+            store(instr.dest, d)
+
+        elif op == IROp.UMOD:
+            d = dreg(instr.dest, "R8")
+            s1 = reg(instr.src1)
+            s2 = reg(instr.src2, "R10")
+            uid = self._next_uid()
+            lines.append(f"    CMP {s2}, V0")
+            lines.append(f"    BEQ __umod_zero_{uid}")
+            lines.append(f"    DIV {d}, {s1}, {s2}")
+            s1 = reg(instr.src1)
+            s2 = reg(instr.src2, "R10")
+            product = "R10" if s1 == "R12" else "R12"
+            lines.append(f"    MUL {product}, {d}, {s2}")
+            lines.append(f"    SUB {d}, {s1}, {product}")
+            lines.append(f"    B __umod_done_{uid}")
+            lines.append(f"__umod_zero_{uid}:")
+            lines.append(f"    MOV {d}, V0")
+            lines.append(f"__umod_done_{uid}:")
             store(instr.dest, d)
 
         elif op == IROp.SHL:
@@ -585,12 +693,16 @@ class AsmEmitter:
 
         elif op in (IROp.BRANCH_EQ, IROp.BRANCH_NE, IROp.BRANCH_LT,
                     IROp.BRANCH_GT, IROp.BRANCH_LE, IROp.BRANCH_GE,
-                    IROp.BRANCH_MI, IROp.BRANCH_PL):
+                    IROp.BRANCH_MI, IROp.BRANCH_PL,
+                    IROp.BRANCH_LO, IROp.BRANCH_HI,
+                    IROp.BRANCH_LS, IROp.BRANCH_HS):
             br_map = {
                 IROp.BRANCH_EQ: "BEQ", IROp.BRANCH_NE: "BNE",
                 IROp.BRANCH_LT: "BLT", IROp.BRANCH_GT: "BGT",
                 IROp.BRANCH_LE: "BLE", IROp.BRANCH_GE: "BGE",
                 IROp.BRANCH_MI: "BMI", IROp.BRANCH_PL: "BPL",
+                IROp.BRANCH_LO: "BCC", IROp.BRANCH_HI: "BHI",
+                IROp.BRANCH_LS: "BLS", IROp.BRANCH_HS: "BCS",
             }
             lines.append(f"    {br_map[op]} {instr.label}")
 
@@ -691,5 +803,8 @@ class AsmEmitter:
             s2 = reg(instr.src2, "R10")
             lines.append(f"    MIN {d}, {s1}, {s2}")
             store(instr.dest, d)
+
+        else:
+            raise CodeGenError(f"unsupported IR op {op.name}")
 
         return lines

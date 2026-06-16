@@ -60,9 +60,9 @@ module matrix {
             ret result;
         }
 
-        // software matrix multiply: C[i][j] = sum_k(A[i][k] * B[k][j])
-        // Returns pointer to new data buffer of size rows * otherCols
-        // this must be reworked to use actual matrix accelerator hardware 
+        // Software multiply for heap I16 matrices. The DE1 MMUL accelerator
+        // currently targets assembler-known U8 matrices with immediate
+        // descriptors, so this dynamic layout cannot use it safely yet.
         I16 MulWith(I16 otherData, I16 otherRows, I16 otherCols) {
             Ptr<I16> other = Cast<Ptr<I16>>(otherData);
             I16 rC = rows;

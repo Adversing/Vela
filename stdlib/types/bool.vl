@@ -13,6 +13,27 @@ module bool {
             ret 0;
         }
 
+        I8 IsTrue() {
+            if (value != 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsFalse() {
+            if (value == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 Normalize() {
+            if (value != 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
         I8 And(I8 other) {
             if (value != 0) {
                 if (other != 0) {
@@ -34,6 +55,35 @@ module bool {
 
         I8 Xor(I8 other) {
             if (value != other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 Nand(I8 other) {
+            if (value != 0) {
+                if (other != 0) {
+                    ret 0;
+                }
+            }
+            ret 1;
+        }
+
+        I8 Nor(I8 other) {
+            if (value != 0) {
+                ret 0;
+            }
+            if (other != 0) {
+                ret 0;
+            }
+            ret 1;
+        }
+
+        I8 Implies(I8 other) {
+            if (value == 0) {
+                ret 1;
+            }
+            if (other != 0) {
                 ret 1;
             }
             ret 0;

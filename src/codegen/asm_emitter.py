@@ -23,7 +23,14 @@ class AsmEmitter:
 
     def emit(self, func_ir: dict[str, list[IRInstr]]) -> str:
         """Produce the complete .de1 file as a string."""
+        entry = "main" if "main" in func_ir else next(iter(func_ir), "main")
+        func_ir = self._prune_unreachable_functions(func_ir, entry)
         self._func_ir = func_ir  # store for OnFree resolution
+        self._full_vtables = any(
+            instr.op == IROp.VCALL
+            for instrs in func_ir.values()
+            for instr in instrs
+        )
 
         self._scan_pools(func_ir)
         runtime_usage = self._compute_runtime_usage(func_ir)
@@ -37,8 +44,6 @@ class AsmEmitter:
         self._output.append("")
 
         vtable_init = self._build_vtable_init()
-
-        entry = "main" if "main" in func_ir else next(iter(func_ir), "main")
 
         self._output.append("main:")
 
@@ -85,6 +90,45 @@ class AsmEmitter:
         self._output = peephole_optimize(self._output)
 
         return "\n".join(self._output)
+
+    def _prune_unreachable_functions(
+        self,
+        func_ir: dict[str, list[IRInstr]],
+        entry: str,
+    ) -> dict[str, list[IRInstr]]:
+        """Drop unused function bodies when static calls fully describe reachability.
+
+        Imported stdlib modules can define many methods, and the target CPU can
+        only encode 12-bit immediate branch/label operands.  Once devirtualizing
+        and inlining have removed dynamic dispatch, keeping unrelated method
+        bodies only increases addresses and can make otherwise valid programs
+        unencodable.  If a reachable VCALL remains, keep everything because the
+        possible runtime targets are intentionally conservative.
+        """
+        if entry not in func_ir:
+            return func_ir
+
+        roots = {entry}
+        roots.update(name for name in func_ir if name.endswith("_OnFree"))
+
+        reachable: set[str] = set()
+        stack = list(roots)
+        has_vcall = False
+        while stack:
+            name = stack.pop()
+            if name in reachable or name not in func_ir:
+                continue
+            reachable.add(name)
+            for instr in func_ir[name]:
+                if instr.op == IROp.VCALL:
+                    has_vcall = True
+                if instr.op == IROp.CALL and instr.label in func_ir:
+                    stack.append(instr.label)
+
+        if has_vcall:
+            return func_ir
+
+        return {name: body for name, body in func_ir.items() if name in reachable}
 
     def _compute_runtime_usage(self, func_ir: dict[str, list[IRInstr]]) -> dict[str, bool]:
         """Detect which runtime helper functions are actually needed."""
@@ -157,6 +201,8 @@ class AsmEmitter:
             lines.append(f"    MOV R1, {onfree_label}")
             lines.append(f"    SAVEM R1, [R0]")
             lines.append(f"    ADD R0, R0, V2")
+            if not getattr(self, "_full_vtables", True):
+                continue
             # method slots
             for entry in vt.entries:
                 lines.append(f"    MOV R1, {entry.mangled_name}")
@@ -298,7 +344,13 @@ class AsmEmitter:
         if offset:
             lines.append(f"    SUB {scratch}, {scratch}, V{offset}")
         lines.append(f"    MOVM {scratch}, [{scratch}]")
+        self._separate_self_addressed_load(lines, scratch)
         return scratch
+
+    def _separate_self_addressed_load(self, lines: list[str], loaded_reg: str) -> None:
+        """Avoid consuming MOVM Rx, [Rx] before the CPU has written Rx back."""
+        delay_reg = "R10" if loaded_reg == "R12" else "R12"
+        lines.append(f"    ADD {delay_reg}, {delay_reg}, V0")
 
     def _store_spill(self, lines: list[str], allocator: RegisterAllocator,
                      vreg: str, value_reg: str) -> None:
@@ -324,6 +376,7 @@ class AsmEmitter:
             lines.append(f"    MOV {scratch}, R11")
             lines.append(f"    ADD {scratch}, {scratch}, V{offset}")
             lines.append(f"    MOVM {scratch}, [{scratch}]")
+            self._separate_self_addressed_load(lines, scratch)
             return scratch
         if alloc.get(vreg) == "__spill":
             return self._load_spill(lines, allocator, vreg, scratch)
@@ -421,6 +474,7 @@ class AsmEmitter:
             if offset > 0:
                 lines.append(f"    ADD R12, R12, V{offset}")
             lines.append("    MOVM R12, [R12]")
+            self._separate_self_addressed_load(lines, "R12")
             lines.append("    BL __vdispatch")
             if instr.dest:
                 d = self._write_reg(instr.dest, alloc, "R12")
@@ -497,6 +551,8 @@ class AsmEmitter:
             d = dreg(instr.dest)
             s = reg(instr.src1)
             lines.append(f"    MOVM {d}, [{s}]")
+            if d == s:
+                self._separate_self_addressed_load(lines, d)
             store(instr.dest, d)
 
         elif op == IROp.STORE_8:
@@ -512,10 +568,9 @@ class AsmEmitter:
         elif op == IROp.SIGN_EXTEND_8:
             d = dreg(instr.dest)
             s = reg(instr.src1)
-            if d != s:
-                lines.append(f"    MOV {d}, {s}")
-            lines.append(f"    LSL {d}, {d}, V8")
-            lines.append(f"    ASR {d}, {d}, V8")
+            lines.append(f"    AND {d}, {s}, V255")
+            lines.append(f"    CMP {d}, V128")
+            lines.append(f"    SUBCS {d}, {d}, V256")
             store(instr.dest, d)
 
         elif op in (IROp.ADD, IROp.SUB, IROp.AND, IROp.OR, IROp.XOR, IROp.BIC):
@@ -743,6 +798,7 @@ class AsmEmitter:
             if offset > 0:
                 lines.append(f"    ADD R12, R12, V{offset}")
             lines.append(f"    MOVM R12, [R12]")
+            self._separate_self_addressed_load(lines, "R12")
             lines.append(f"    BL __vdispatch")
             if instr.dest:
                 d = reg(instr.dest)

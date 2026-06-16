@@ -29,6 +29,44 @@ module char {
             ret 0;
         }
 
+        I8 IsAlnum() {
+            if (value >= 48) {
+                if (value <= 57) {
+                    ret 1;
+                }
+            }
+            if (value >= 65) {
+                if (value <= 90) {
+                    ret 1;
+                }
+            }
+            if (value >= 97) {
+                if (value <= 122) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
+        I8 IsHexDigit() {
+            if (value >= 48) {
+                if (value <= 57) {
+                    ret 1;
+                }
+            }
+            if (value >= 65) {
+                if (value <= 70) {
+                    ret 1;
+                }
+            }
+            if (value >= 97) {
+                if (value <= 102) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
         I8 IsUpper() {
             if (value >= 65) {
                 if (value <= 90) {
@@ -54,6 +92,48 @@ module char {
             ret 0;
         }
 
+        I8 IsWhitespace() {
+            if (value == 32) {
+                ret 1;
+            }
+            if (value == 9) {
+                ret 1;
+            }
+            if (value == 10) {
+                ret 1;
+            }
+            if (value == 13) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsAscii() {
+            if (value <= 127) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsControl() {
+            if (value < 32) {
+                ret 1;
+            }
+            if (value == 127) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsPrintable() {
+            if (value >= 32) {
+                if (value <= 126) {
+                    ret 1;
+                }
+            }
+            ret 0;
+        }
+
         U8 ToUpper() {
             if (value >= 97) {
                 if (value <= 122) {
@@ -74,6 +154,25 @@ module char {
 
         I16 ToInt() {
             ret value;
+        }
+
+        I16 HexValue() {
+            if (value >= 48) {
+                if (value <= 57) {
+                    ret value - 48;
+                }
+            }
+            if (value >= 65) {
+                if (value <= 70) {
+                    ret value - 55;
+                }
+            }
+            if (value >= 97) {
+                if (value <= 102) {
+                    ret value - 87;
+                }
+            }
+            ret 0 - 1;
         }
 
         I8 Equals(U8 other) {

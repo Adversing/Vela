@@ -7,10 +7,14 @@ module int {
         }
 
         I16 Abs() {
-            if (value < 0) {
-                ret 0 - value;
+            I16 result = 0;
+            ASM(
+                [[in]] R0 = value;
+                [[out]] R0 = result;
+            ) {
+                ABS R0, R0
             }
-            ret value;
+            ret result;
         }
 
         I16 Negate() {
@@ -50,6 +54,32 @@ module int {
             ret value * other;
         }
 
+        I16 Div(I16 other) {
+            ret value / other;
+        }
+
+        I16 Mod(I16 other) {
+            ret value % other;
+        }
+
+        I16 Square() {
+            ret value * value;
+        }
+
+        I8 IsEven() {
+            if (value % 2 == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsOdd() {
+            if (value % 2 != 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
         I8 Equals(I16 other) {
             if (value == other) {
                 ret 1;
@@ -57,18 +87,59 @@ module int {
             ret 0;
         }
 
-        I16 MinWith(I16 other) {
+        I8 LessThan(I16 other) {
             if (value < other) {
-                ret value;
+                ret 1;
             }
-            ret other;
+            ret 0;
+        }
+
+        I8 GreaterThan(I16 other) {
+            if (value > other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I16 Compare(I16 other) {
+            if (value < other) {
+                ret 0 - 1;
+            }
+            if (value > other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I16 AbsDiff(I16 other) {
+            if (value > other) {
+                ret value - other;
+            }
+            ret other - value;
+        }
+
+        I16 MinWith(I16 other) {
+            I16 result = 0;
+            ASM(
+                [[in]] R0 = value;
+                [[in]] R1 = other;
+                [[out]] R0 = result;
+            ) {
+                MIN R0, R0, R1
+            }
+            ret result;
         }
 
         I16 MaxWith(I16 other) {
-            if (value > other) {
-                ret value;
+            I16 result = 0;
+            ASM(
+                [[in]] R0 = value;
+                [[in]] R1 = other;
+                [[out]] R0 = result;
+            ) {
+                MAX R0, R0, R1
             }
-            ret other;
+            ret result;
         }
 
         I16 Clamp(I16 lo, I16 hi) {
@@ -79,6 +150,33 @@ module int {
                 ret hi;
             }
             ret value;
+        }
+
+        I8 Between(I16 lo, I16 hi) {
+            if (value < lo) {
+                ret 0;
+            }
+            if (value > hi) {
+                ret 0;
+            }
+            ret 1;
+        }
+
+        I16 GcdWith(I16 other) {
+            I16 a = value;
+            I16 b = other;
+            if (a < 0) {
+                a = 0 - a;
+            }
+            if (b < 0) {
+                b = 0 - b;
+            }
+            while (b != 0) {
+                I16 r = a % b;
+                a = b;
+                b = r;
+            }
+            ret a;
         }
     }
 }

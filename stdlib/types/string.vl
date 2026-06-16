@@ -19,6 +19,15 @@ module string {
             ret ptr[index];
         }
 
+        U8 First() {
+            ret ptr[0];
+        }
+
+        U8 Last() {
+            I16 idx = len - 1;
+            ret ptr[idx];
+        }
+
         I8 Equals(Ptr<U8> otherPtr, I16 otherLen) {
             if (len != otherLen) {
                 ret 0;
@@ -26,6 +35,40 @@ module string {
             I16 i = 0;
             while (i < len) {
                 U8 a = ptr[i];
+                U8 b = otherPtr[i];
+                if (a != b) {
+                    ret 0;
+                }
+                i = i + 1;
+            }
+            ret 1;
+        }
+
+        I8 StartsWith(Ptr<U8> otherPtr, I16 otherLen) {
+            if (otherLen > len) {
+                ret 0;
+            }
+            I16 i = 0;
+            while (i < otherLen) {
+                U8 a = ptr[i];
+                U8 b = otherPtr[i];
+                if (a != b) {
+                    ret 0;
+                }
+                i = i + 1;
+            }
+            ret 1;
+        }
+
+        I8 EndsWith(Ptr<U8> otherPtr, I16 otherLen) {
+            if (otherLen > len) {
+                ret 0;
+            }
+            I16 offset = len - otherLen;
+            I16 i = 0;
+            while (i < otherLen) {
+                I16 selfIndex = offset + i;
+                U8 a = ptr[selfIndex];
                 U8 b = otherPtr[i];
                 if (a != b) {
                     ret 0;
@@ -47,6 +90,19 @@ module string {
             ret 0;
         }
 
+        I16 Count(U8 ch) {
+            I16 total = 0;
+            I16 i = 0;
+            while (i < len) {
+                U8 c = ptr[i];
+                if (c == ch) {
+                    total = total + 1;
+                }
+                i = i + 1;
+            }
+            ret total;
+        }
+
         I16 IndexOf(U8 ch) {
             I16 i = 0;
             while (i < len) {
@@ -57,6 +113,52 @@ module string {
                 i = i + 1;
             }
             ret 0 - 1;
+        }
+
+        I16 IndexOfFrom(U8 ch, I16 start) {
+            if (start < 0) {
+                start = 0;
+            }
+            I16 i = start;
+            while (i < len) {
+                U8 c = ptr[i];
+                if (c == ch) {
+                    ret i;
+                }
+                i = i + 1;
+            }
+            ret 0 - 1;
+        }
+
+        I16 LastIndexOf(U8 ch) {
+            if (len == 0) {
+                ret 0 - 1;
+            }
+            I16 i = len - 1;
+            while (i >= 0) {
+                U8 c = ptr[i];
+                if (c == ch) {
+                    ret i;
+                }
+                i = i - 1;
+            }
+            ret 0 - 1;
+        }
+
+        I16 CopyTo(Ptr<U8> dest, I16 maxLen) {
+            if (maxLen <= 0) {
+                ret 0;
+            }
+            I16 count = len;
+            if (count > maxLen) {
+                count = maxLen;
+            }
+            I16 i = 0;
+            while (i < count) {
+                dest[i] = ptr[i];
+                i = i + 1;
+            }
+            ret count;
         }
     }
 }

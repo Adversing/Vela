@@ -73,6 +73,29 @@ class RegisterAllocator:
                     first_use[reg] = i
                 last_use[reg] = i
 
+        label_positions = {
+            instr.label: i
+            for i, instr in enumerate(instrs)
+            if instr.op == IROp.LABEL and instr.label
+        }
+        branch_ops = {
+            IROp.BRANCH, IROp.BRANCH_EQ, IROp.BRANCH_NE,
+            IROp.BRANCH_LT, IROp.BRANCH_GT, IROp.BRANCH_LE,
+            IROp.BRANCH_GE, IROp.BRANCH_MI, IROp.BRANCH_PL,
+            IROp.BRANCH_LO, IROp.BRANCH_HI, IROp.BRANCH_LS,
+            IROp.BRANCH_HS,
+        }
+        for i, instr in enumerate(instrs):
+            if instr.op not in branch_ops or instr.label not in label_positions:
+                continue
+            target = label_positions[instr.label]
+            if target > i:
+                continue
+            for loop_instr in instrs[target:i + 1]:
+                for reg in self._regs_of(loop_instr):
+                    if reg in first_use and first_use[reg] < target:
+                        last_use[reg] = max(last_use[reg], i)
+
         # find positions of all call-like instructions
         call_positions: list[int] = []
         for i, instr in enumerate(instrs):

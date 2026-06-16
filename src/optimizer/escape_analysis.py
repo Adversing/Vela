@@ -43,6 +43,7 @@ def _find_non_escaping(
 ) -> set[str]:
     """Return the subset of allocation registers that do NOT escape."""
     escaping: set[str] = set()
+    non_param_escaping: set[str] = set()
 
     # also track aliases: MOV alias, obj -> alias is also the same object
     # transitive: MOV a, alloc; MOV b, a -> b aliases alloc too
@@ -60,7 +61,34 @@ def _find_non_escaping(
             return reg
         return aliases.get(reg)
 
+    vtable_regs: set[str] = set()
+
     for instr in instrs:
+        # Returning or otherwise using the pointer value itself makes the
+        # allocation observable.  SROA only understands object field accesses,
+        # not raw pointer identity/arithmetic.
+        if instr.op == IROp.RET and instr.src1:
+            root = _root(instr.src1)
+            if root:
+                escaping.add(root)
+                non_param_escaping.add(root)
+
+        if instr.op in {
+            IROp.SUB, IROp.MUL, IROp.DIV, IROp.MOD,
+            IROp.UDIV, IROp.UMOD, IROp.RSB,
+            IROp.AND, IROp.OR, IROp.XOR, IROp.NOT, IROp.BIC,
+            IROp.SHL, IROp.SHR, IROp.ASR,
+            IROp.FADD, IROp.FSUB, IROp.FMUL, IROp.FDIV, IROp.FCMP,
+            IROp.CMP, IROp.SIGN_EXTEND_8, IROp.PRINT_SYSCALL,
+            IROp.PTR_ADD, IROp.ABS, IROp.MAX, IROp.MIN,
+        }:
+            for src in (instr.src1, instr.src2):
+                if src:
+                    root = _root(src)
+                    if root:
+                        escaping.add(root)
+                        non_param_escaping.add(root)
+
         # PARAM src1 -> the object is being passed as an argument
         if instr.op == IROp.PARAM and instr.src1:
             root = _root(instr.src1)
@@ -74,6 +102,7 @@ def _find_non_escaping(
             root = _root(instr.src1)
             if root:
                 escaping.add(root)
+                non_param_escaping.add(root)
 
         # STORE where the value being stored is the allocation pointer
         # (not where the allocation pointer is the address)
@@ -87,13 +116,40 @@ def _find_non_escaping(
                     pass  # writing a field into our own object - safe
                 else:
                     escaping.add(root)
+                    non_param_escaping.add(root)
+
+        if instr.op in (IROp.STORE_8, IROp.STORE_16) and instr.src2:
+            root = _root(instr.src2)
+            if root:
+                is_vtable_store = instr.op == IROp.STORE_16 and instr.src1 in vtable_regs
+                if not is_vtable_store:
+                    escaping.add(root)
+                    non_param_escaping.add(root)
+
+        if instr.op in (IROp.LOAD_8, IROp.LOAD_16) and instr.src1:
+            root = _root(instr.src1)
+            if root:
+                escaping.add(root)
+                non_param_escaping.add(root)
+
+        if instr.dest:
+            vtable_regs.discard(instr.dest)
+        if (
+            instr.op == IROp.LOAD_GLOBAL_ADDR
+            and instr.dest
+            and instr.label
+            and instr.label.startswith("__vtable_")
+        ):
+            vtable_regs.add(instr.dest)
+        elif instr.op == IROp.MOV and instr.dest and instr.src1 in vtable_regs:
+            vtable_regs.add(instr.dest)
 
     # 2nd pass: un-escape allocations that are ONLY passed to __free.
     # The first pass conservatively marked all PARAM uses as escaping;
     # now refine.
     refined_escaping = set(escaping)
     for root in escaping:
-        if _only_param_use_is_free(instrs, root, aliases):
+        if root not in non_param_escaping and _only_param_use_is_free(instrs, root, aliases):
             refined_escaping.discard(root)
 
     return set(allocs.keys()) - refined_escaping
@@ -155,6 +211,7 @@ def _scalarise(
     aliases: dict[str, str] = {}
     const_vals: dict[str, int] = {}
     addr_to_field: dict[str, tuple[str, int]] = {}
+    vtable_vals: set[str] = set()
     killed_roots: set[str] = set()
 
     def _root(reg: str | None) -> str | None:
@@ -173,6 +230,7 @@ def _scalarise(
         aliases.pop(dest, None)
         const_vals.pop(dest, None)
         addr_to_field.pop(dest, None)
+        vtable_vals.discard(dest)
 
     def _update_facts(instr: IRInstr, *, preserve_root_dest: bool = False) -> None:
         if instr.dest:
@@ -181,10 +239,17 @@ def _scalarise(
             _clear_dest(instr.dest)
         if instr.op == IROp.CONST and instr.dest and isinstance(instr.imm, int):
             const_vals[instr.dest] = instr.imm
+        elif (instr.op == IROp.LOAD_GLOBAL_ADDR
+              and instr.dest
+              and instr.label
+              and instr.label.startswith("__vtable_")):
+            vtable_vals.add(instr.dest)
         elif instr.op == IROp.MOV and instr.dest:
             root = _root(instr.src1)
             if root:
                 aliases[instr.dest] = root
+            if instr.src1 in vtable_vals:
+                vtable_vals.add(instr.dest)
 
     # track which alloc regs correspond to which PARAM+CALL sequences to remove.
     alloc_call_indices = _find_alloc_free_indices(instrs, non_escaping, {})
@@ -233,7 +298,7 @@ def _scalarise(
         # STORE_16 directly into obj (offset 0 = vtable ptr write)
         if instr.op == IROp.STORE_16 and instr.src2:
             root = _root(instr.src2)
-            if root:
+            if root and instr.src1 in vtable_vals:
                 # this is the vtable pointer store - just remove it
                 continue
 

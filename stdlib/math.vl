@@ -1,23 +1,76 @@
 module math {
     I16 Abs(I16 x) {
-        if (x < 0) {
-            ret 0 - x;
+        I16 result = 0;
+        ASM(
+            [[in]] R0 = x;
+            [[out]] R0 = result;
+        ) {
+            ABS R0, R0
         }
-        ret x;
+        ret result;
     }
 
     I16 Min(I16 a, I16 b) {
-        if (a < b) {
-            ret a;
+        I16 result = 0;
+        ASM(
+            [[in]] R0 = a;
+            [[in]] R1 = b;
+            [[out]] R0 = result;
+        ) {
+            MIN R0, R0, R1
         }
-        ret b;
+        ret result;
     }
 
     I16 Max(I16 a, I16 b) {
-        if (a > b) {
-            ret a;
+        I16 result = 0;
+        ASM(
+            [[in]] R0 = a;
+            [[in]] R1 = b;
+            [[out]] R0 = result;
+        ) {
+            MAX R0, R0, R1
         }
-        ret b;
+        ret result;
+    }
+
+    I16 Square(I16 x) {
+        ret x * x;
+    }
+
+    I16 Cube(I16 x) {
+        ret x * x * x;
+    }
+
+    I8 IsEven(I16 x) {
+        if (x % 2 == 0) {
+            ret 1;
+        }
+        ret 0;
+    }
+
+    I8 IsOdd(I16 x) {
+        if (x % 2 != 0) {
+            ret 1;
+        }
+        ret 0;
+    }
+
+    I16 AbsDiff(I16 a, I16 b) {
+        if (a > b) {
+            ret a - b;
+        }
+        ret b - a;
+    }
+
+    I8 InRange(I16 x, I16 lo, I16 hi) {
+        if (x < lo) {
+            ret 0;
+        }
+        if (x > hi) {
+            ret 0;
+        }
+        ret 1;
     }
 
     I16 Clamp(I16 x, I16 lo, I16 hi) {
@@ -38,6 +91,21 @@ module math {
             i = i + 1;
         }
         ret result;
+    }
+
+    I16 Gcd(I16 a, I16 b) {
+        if (a < 0) {
+            a = 0 - a;
+        }
+        if (b < 0) {
+            b = 0 - b;
+        }
+        while (b != 0) {
+            I16 r = a % b;
+            a = b;
+            b = r;
+        }
+        ret a;
     }
 
     I16 Sign(I16 x) {

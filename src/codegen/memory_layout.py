@@ -93,15 +93,23 @@ class MemoryLayout:
                 if init_expr:
                     value = self._int_initializer_value(init_expr)
                     if value is not None:
-                        init_val = format(value & 0xFF, '08b')
+                        init_val = self._int_bytes_initializer(value, 1)
                 self._entries.append(DataEntry(name, 1, f"= {init_val}"))
             else:
                 init_val = "0000000000000000"
                 if init_expr:
                     value = self._int_initializer_value(init_expr)
                     if value is not None:
-                        init_val = format(value & 0xFFFF, '016b')
+                        init_val = self._int_bytes_initializer(value, size)
                 self._entries.append(DataEntry(name, 2, f"= {init_val}"))
+
+    def _int_bytes_initializer(self, value: int, size: int) -> str:
+        mask = (1 << (size * 8)) - 1
+        encoded = value & mask
+        return "".join(
+            format((encoded >> (8 * index)) & 0xFF, "08b")
+            for index in range(size)
+        )
 
     def _int_initializer_value(self, expr) -> int | None:
         from src.parser.ast_nodes import CharLiteral, IntLiteral, UnaryExpr
@@ -155,8 +163,7 @@ class MemoryLayout:
 
     def _emit_constant_pool(self) -> None:
         for value, label in self._constant_pool.items():
-            # store as 16-bit binary
-            bits = format(value & 0xFFFF, '016b')
+            bits = self._int_bytes_initializer(value, 2)
             self._entries.append(DataEntry(label, 2, f"= {bits}"))
 
     def _emit_float_pool(self) -> None:

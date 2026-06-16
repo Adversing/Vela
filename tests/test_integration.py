@@ -21,11 +21,27 @@ def test_imports_with_same_declared_module_name_from_different_files_compile(tmp
     (tmp_path / "pkg_a").mkdir()
     (tmp_path / "pkg_b").mkdir()
     (tmp_path / "pkg_a" / "foo.vl").write_text(
-        "module util { I16 a() { ret 1; } }",
+        """
+        module util {
+            I16 a() {
+                I16 out = 1;
+                ASM([[out]] R0 = out;) { MOV R0, V1 }
+                ret out;
+            }
+        }
+        """,
         encoding="utf-8",
     )
     (tmp_path / "pkg_b" / "foo.vl").write_text(
-        "module util { I16 b() { ret 2; } }",
+        """
+        module util {
+            I16 b() {
+                I16 out = 2;
+                ASM([[out]] R0 = out;) { MOV R0, V2 }
+                ret out;
+            }
+        }
+        """,
         encoding="utf-8",
     )
 
@@ -63,7 +79,7 @@ def test_imported_global_variable_can_be_referenced(tmp_path):
         project_root=tmp_path,
     )
 
-    assert "answer = 0000000000101010" in asm
+    assert "answer = 0010101000000000" in asm
     assert "MOVM" in asm
 
 
@@ -86,7 +102,7 @@ def test_imported_alias_can_be_referenced(tmp_path):
         project_root=tmp_path,
     )
 
-    assert "answer = 0000000000101010" in asm
+    assert "answer = 0010101000000000" in asm
 
 
 def test_imported_alias_does_not_leak_to_sibling_module(tmp_path):
@@ -236,9 +252,11 @@ class TestArithmetic:
     def test_addition_produces_add(self):
         asm = compile("""
             module test {
+                I16 x = 10;
+                I16 y = 20;
                 I16 add(I16 a, I16 b) { ret a + b; }
                 I16 main() {
-                    ret add(10, 20);
+                    ret add(x, y);
                 }
             }
         """)
@@ -258,10 +276,11 @@ class TestArithmetic:
     def test_multiplication_produces_mul(self):
         asm = compile("""
             module test {
+                I16 x = 3;
+                I16 y = 4;
                 I16 mul(I16 a, I16 b) { ret a * b; }
                 I16 main() {
-                    I16 x = mul(3, 4);
-                    ret x;
+                    ret mul(x, y);
                 }
             }
         """)
@@ -281,8 +300,10 @@ class TestArithmetic:
     def test_signed_modulo_uses_signed_adjustment(self):
         asm = compile("""
             module test {
+                I16 x = 7;
+                I16 y = 3;
                 I16 rem(I16 a, I16 b) { ret a % b; }
-                I16 main() { ret rem(7, 3); }
+                I16 main() { ret rem(x, y); }
             }
         """)
         assert "# Signed modulo" in asm
@@ -309,10 +330,11 @@ class TestArithmetic:
     def test_float_unary_minus_uses_fp_subtract(self):
         asm = compile("""
             module test {
+                F16 value = 1.0;
                 F16 neg(F16 x) {
                     ret -x;
                 }
-                F16 main() { ret 0.0; }
+                F16 main() { ret neg(value); }
             }
         """)
         assert "FSUB" in asm
@@ -323,31 +345,47 @@ class TestFunctionCalls:
     def test_function_call_produces_bl(self):
         asm = compile("""
             module test {
-                I16 add(I16 a, I16 b) { ret a + b; }
+                I16 keep(I16 n) {
+                    I16 out = n;
+                    ASM([[in]] R0 = n; [[out]] R0 = out;) {
+                        ADD R0, R0, V0
+                    }
+                    ret out;
+                }
                 I16 main() {
-                    I16 r = add(3, 4);
-                    ret r;
+                    ret keep(3);
                 }
             }
         """)
-        assert "BL" in asm
+        assert "BL keep" in asm
 
     def test_function_label_present(self):
         asm = compile("""
             module test {
-                I16 add(I16 a, I16 b) { ret a + b; }
+                I16 keep(I16 n) {
+                    I16 out = n;
+                    ASM([[in]] R0 = n; [[out]] R0 = out;) {
+                        ADD R0, R0, V0
+                    }
+                    ret out;
+                }
                 I16 main() {
-                    I16 r = add(3, 4);
-                    ret r;
+                    ret keep(4);
                 }
             }
         """)
-        assert "add:" in asm
+        assert "keep:" in asm
 
     def test_callee_function_referenced(self):
         asm = compile("""
             module test {
-                I16 double(I16 n) { ret n + n; }
+                I16 double(I16 n) {
+                    I16 out = n + n;
+                    ASM([[in]] R0 = out; [[out]] R0 = out;) {
+                        ADD R0, R0, V0
+                    }
+                    ret out;
+                }
                 I16 main() {
                     I16 r = double(5);
                     ret r;
@@ -454,9 +492,12 @@ class TestClassAllocation:
         asm = compile(self.BASIC_CLASS)
         assert "__free" in asm
 
-    def test_on_alloc_label(self):
+    def test_on_alloc_is_inlined_when_statically_reachable(self):
         asm = compile(self.BASIC_CLASS)
-        assert "Foo_OnAlloc:" in asm
+        assert "Foo_OnAlloc:" not in asm
+        assert "__vtable_Foo" in asm
+        assert "BL __malloc" in asm
+        assert "SAVEM" in asm
 
     def test_on_free_label(self):
         asm = compile(self.BASIC_CLASS)
@@ -656,8 +697,9 @@ class TestPointers:
                 }
             }
         """)
-        assert "Node_OnAlloc:" in asm
-        # Verify field access uses offsets
+        assert "Node_OnAlloc:" not in asm
+        assert "__vtable_Node" in asm
+        # Verify field access uses offsets, even when OnAlloc is inlined.
         assert "SAVEM" in asm
 
 
@@ -665,8 +707,16 @@ class TestMultipleFunctions:
     def test_multiple_functions_all_have_labels(self):
         asm = compile("""
             module test {
-                I16 foo() { ret 1; }
-                I16 bar() { ret 2; }
+                I16 foo() {
+                    I16 out = 1;
+                    ASM([[out]] R0 = out;) { MOV R0, V1 }
+                    ret out;
+                }
+                I16 bar() {
+                    I16 out = 2;
+                    ASM([[out]] R0 = out;) { MOV R0, V2 }
+                    ret out;
+                }
                 I16 main() {
                     I16 a = foo();
                     I16 b = bar();
@@ -712,7 +762,7 @@ class TestGlobalVariables:
             line.strip().startswith("MOV ") and "[R" in line
             for line in asm.splitlines()
         )
-        assert "LSL" in asm and "ASR" in asm
+        assert "AND" in asm and "CMP" in asm and "SUBCS" in asm
 
     def test_char_global_initializer_is_encoded(self):
         asm = compile("""
@@ -793,10 +843,10 @@ class TestExamplePrograms:
                 }
             }
         """)
-        assert "Node_OnAlloc:" in asm
+        assert "Node_OnAlloc:" not in asm
         # Node has empty OnFree → falls back to Storeable_OnFree
         assert "Storeable_OnFree:" in asm
-        assert "Node_getValue:" in asm
+        assert "Node_getValue:" not in asm
         assert "__malloc" in asm
         assert "__free" in asm
 

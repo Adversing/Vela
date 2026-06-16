@@ -7,35 +7,35 @@ module float {
         }
 
         I8 IsPositive() {
-            if (value > 0) {
+            if (value > 0.0) {
                 ret 1;
             }
             ret 0;
         }
 
         I8 IsNegative() {
-            if (value < 0) {
+            if (value < 0.0) {
                 ret 1;
             }
             ret 0;
         }
 
         I8 IsZero() {
-            if (value == 0) {
+            if (value == 0.0) {
                 ret 1;
             }
             ret 0;
         }
 
         F16 Abs() {
-            if (value < 0) {
-                ret 0 - value;
+            if (value < 0.0) {
+                ret 0.0 - value;
             }
             ret value;
         }
 
         F16 Negate() {
-            ret 0 - value;
+            ret 0.0 - value;
         }
 
         F16 Add(F16 other) {
@@ -73,6 +73,44 @@ module float {
                 ret 1;
             }
             ret 0;
+        }
+
+        I8 GreaterOrEqual(F16 other) {
+            if (value >= other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 LessOrEqual(F16 other) {
+            if (value <= other) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        F16 MinWith(F16 other) {
+            if (value < other) {
+                ret value;
+            }
+            ret other;
+        }
+
+        F16 MaxWith(F16 other) {
+            if (value > other) {
+                ret value;
+            }
+            ret other;
+        }
+
+        F16 Clamp(F16 lo, F16 hi) {
+            if (value < lo) {
+                ret lo;
+            }
+            if (value > hi) {
+                ret hi;
+            }
+            ret value;
         }
     }
 }

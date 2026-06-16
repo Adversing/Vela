@@ -19,6 +19,14 @@ module array {
             ret data[index];
         }
 
+        I16 Capacity() {
+            ret capacity;
+        }
+
+        I16 Remaining() {
+            ret capacity - length;
+        }
+
         U0 Set(I16 index, I16 value) {
             data[index] = value;
         }
@@ -28,13 +36,38 @@ module array {
             length = length + 1;
         }
 
+        I8 TryPush(I16 value) {
+            if (length >= capacity) {
+                ret 0;
+            }
+            data[length] = value;
+            length = length + 1;
+            ret 1;
+        }
+
         I16 Pop() {
             length = length - 1;
             ret data[length];
         }
 
+        I8 TryPop(Ptr<I16> dest) {
+            if (length == 0) {
+                ret 0;
+            }
+            length = length - 1;
+            dest[0] = data[length];
+            ret 1;
+        }
+
         I8 IsEmpty() {
             if (length == 0) {
+                ret 1;
+            }
+            ret 0;
+        }
+
+        I8 IsFull() {
+            if (length >= capacity) {
                 ret 1;
             }
             ret 0;
@@ -61,6 +94,19 @@ module array {
             ret 0;
         }
 
+        I16 Count(I16 value) {
+            I16 total = 0;
+            I16 i = 0;
+            while (i < length) {
+                I16 elem = data[i];
+                if (elem == value) {
+                    total = total + 1;
+                }
+                i = i + 1;
+            }
+            ret total;
+        }
+
         I16 IndexOf(I16 value) {
             I16 i = 0;
             while (i < length) {
@@ -74,6 +120,21 @@ module array {
             ret neg;
         }
 
+        I16 LastIndexOf(I16 value) {
+            if (length == 0) {
+                ret 0 - 1;
+            }
+            I16 i = length - 1;
+            while (i >= 0) {
+                I16 elem = data[i];
+                if (elem == value) {
+                    ret i;
+                }
+                i = i - 1;
+            }
+            ret 0 - 1;
+        }
+
         U0 Fill(I16 value) {
             I16 i = 0;
             while (i < capacity) {
@@ -85,6 +146,95 @@ module array {
 
         U0 Clear() {
             length = 0;
+        }
+
+        U0 Swap(I16 a, I16 b) {
+            I16 tmp = data[a];
+            data[a] = data[b];
+            data[b] = tmp;
+        }
+
+        U0 Reverse() {
+            I16 left = 0;
+            I16 right = length - 1;
+            while (left < right) {
+                I16 tmp = data[left];
+                data[left] = data[right];
+                data[right] = tmp;
+                left = left + 1;
+                right = right - 1;
+            }
+        }
+
+        I8 Insert(I16 index, I16 value) {
+            if (index < 0) {
+                ret 0;
+            }
+            if (index > length) {
+                ret 0;
+            }
+            if (length >= capacity) {
+                ret 0;
+            }
+            I16 i = length;
+            while (i > index) {
+                I16 prev = i - 1;
+                data[i] = data[prev];
+                i = prev;
+            }
+            data[index] = value;
+            length = length + 1;
+            ret 1;
+        }
+
+        I8 RemoveAt(I16 index) {
+            if (index < 0) {
+                ret 0;
+            }
+            if (index >= length) {
+                ret 0;
+            }
+            I16 i = index;
+            I16 last = length - 1;
+            while (i < last) {
+                I16 next = i + 1;
+                data[i] = data[next];
+                i = next;
+            }
+            length = last;
+            ret 1;
+        }
+
+        I16 Min() {
+            if (length == 0) {
+                ret 0;
+            }
+            I16 result = data[0];
+            I16 i = 1;
+            while (i < length) {
+                I16 elem = data[i];
+                if (elem < result) {
+                    result = elem;
+                }
+                i = i + 1;
+            }
+            ret result;
+        }
+
+        I16 Max() {
+            if (length == 0) {
+                ret 0;
+            }
+            I16 result = data[0];
+            I16 i = 1;
+            while (i < length) {
+                I16 elem = data[i];
+                if (elem > result) {
+                    result = elem;
+                }
+                i = i + 1;
+            }
+            ret result;
         }
 
         I16 Sum() {

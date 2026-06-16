@@ -47,9 +47,12 @@ def _inline_one_pass(
 
     result: list[IRInstr] = []
     changed = False
-    # we need to look backward for PARAM instructions that feed into the
-    # CALL, so we collect them in a buffer.
+    # PARAM nodes are pseudo-instructions and are not always contiguous:
+    # argument expressions can emit CONST/LOAD/etc. between PARAMs.  Keep
+    # the whole call setup window so an inlined call can drop the PARAMs
+    # while preserving those real instructions in order.
     param_buffer: list[IRInstr] = []
+    setup_window: list[IRInstr] = []
 
     i = 0
     while i < len(instrs):
@@ -58,6 +61,7 @@ def _inline_one_pass(
         # collect PARAMs
         if instr.op == IROp.PARAM:
             param_buffer.append(instr)
+            setup_window.append(instr)
             i += 1
             continue
 
@@ -76,20 +80,34 @@ def _inline_one_pass(
                 instr.arg_count,
             )
             if inlined is not None:
+                result.extend(i for i in setup_window if i.op != IROp.PARAM)
                 result.extend(inlined)
                 param_buffer = []
+                setup_window = []
                 changed = True
                 i += 1
                 continue
 
-        # not inlined: flush the param buffer and emit the instruction.
-        result.extend(param_buffer)
-        param_buffer = []
+        # A CALL consumes the pending setup.  If it was not inlined, keep
+        # the original PARAMs and setup instructions for the emitter.
+        if instr.op in (IROp.CALL, IROp.VCALL):
+            result.extend(setup_window)
+            setup_window = []
+            param_buffer = []
+            result.append(instr)
+            i += 1
+            continue
+
+        if param_buffer:
+            setup_window.append(instr)
+            i += 1
+            continue
+
         result.append(instr)
         i += 1
 
     # flush any trailing PARAMs (shouldn't happen in well-formed IR)
-    result.extend(param_buffer)
+    result.extend(setup_window)
     return result, changed
 
 
@@ -116,6 +134,8 @@ def _do_inline(
     for p in params:
         if p.imm is not None and isinstance(p.imm, int) and p.src1:
             arg_map[f"__arg{p.imm}"] = p.src1
+    if any(f"__arg{i}" not in arg_map for i in range(arg_count)):
+        return None
 
     # clone and rename the callee body.
     # skip the leading LABEL instruction (the function entry label).

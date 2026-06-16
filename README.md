@@ -81,7 +81,7 @@ Vela/
 │   │   ├── char.vl               # Char wrapper class
 │   │   ├── string.vl             # String class (length-prefixed)
 │   │   ├── array.vl              # Dynamic array
-│   │   ├── matrix.vl             # 2D matrix (uses native ISA ops)
+│   │   ├── matrix.vl             # Heap-backed 2D matrix
 │   │   └── null.vl               # NULL alias
 │   └── math.vl                   # Math utilities (Abs, Min, Max, Pow, ...)
 ├── examples/                     # Sample programs with compiled .de1 output
@@ -312,17 +312,17 @@ Implicit base class for all objects:
 
 | Class    | Wraps      | Key Methods |
 |----------|------------|-------------|
-| `Int`    | I16        | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Equals()`, `MinWith()`, `MaxWith()`, `Clamp()` |
-| `Float`  | F16        | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Div()`, `Equals()`, `GreaterThan()`, `LessThan()` |
-| `Bool`   | BoolType   | `Not()`, `And()`, `Or()`, `Xor()`, `ToInt()`, `Equals()` — distinct compile-time type, only accepts `true`/`false`/comparisons |
-| `Char`   | U8         | `IsAlpha()`, `IsDigit()`, `IsUpper()`, `IsLower()`, `IsSpace()`, `ToUpper()`, `ToLower()`, `ToInt()`, `Equals()` |
-| `String` | Ptr+len    | `IsEmpty()`, `CharAt()`, `Equals()`, `Contains()`, `IndexOf()` |
-| `Array`  | heap       | `Get()`, `Set()`, `Push()`, `Pop()`, `IsEmpty()`, `First()`, `Last()`, `Contains()`, `IndexOf()`, `Fill()`, `Clear()`, `Sum()` |
+| `Int`    | I16        | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Div()`, `Mod()`, `Square()`, `IsEven()`, `IsOdd()`, `Equals()`, `LessThan()`, `GreaterThan()`, `Compare()`, `AbsDiff()`, `MinWith()`, `MaxWith()`, `Clamp()`, `Between()`, `GcdWith()` |
+| `Float`  | F16        | `Abs()`, `Negate()`, `IsPositive()`, `IsNegative()`, `IsZero()`, `Add()`, `Sub()`, `Mul()`, `Div()`, `Equals()`, `GreaterThan()`, `LessThan()`, `GreaterOrEqual()`, `LessOrEqual()`, `MinWith()`, `MaxWith()`, `Clamp()` |
+| `Bool`   | BoolType   | `Not()`, `IsTrue()`, `IsFalse()`, `Normalize()`, `And()`, `Or()`, `Xor()`, `Nand()`, `Nor()`, `Implies()`, `ToInt()`, `Equals()` — distinct compile-time type, only accepts `true`/`false`/comparisons |
+| `Char`   | U8         | `IsAlpha()`, `IsDigit()`, `IsAlnum()`, `IsHexDigit()`, `IsUpper()`, `IsLower()`, `IsSpace()`, `IsWhitespace()`, `IsAscii()`, `IsControl()`, `IsPrintable()`, `ToUpper()`, `ToLower()`, `ToInt()`, `HexValue()`, `Equals()` |
+| `String` | Ptr+len    | `IsEmpty()`, `CharAt()`, `First()`, `Last()`, `Equals()`, `StartsWith()`, `EndsWith()`, `Contains()`, `Count()`, `IndexOf()`, `IndexOfFrom()`, `LastIndexOf()`, `CopyTo()` |
+| `Array`  | heap       | `Get()`, `Capacity()`, `Remaining()`, `Set()`, `Push()`, `TryPush()`, `Pop()`, `TryPop()`, `IsEmpty()`, `IsFull()`, `First()`, `Last()`, `Contains()`, `Count()`, `IndexOf()`, `LastIndexOf()`, `Fill()`, `Clear()`, `Swap()`, `Reverse()`, `Insert()`, `RemoveAt()`, `Min()`, `Max()`, `Sum()` |
 | `Matrix` | heap       | `Get()`, `Set()`, `Size()`, `IsSquare()`, `Fill()`, `Sum()`, `Trace()`, `MulWith()`, `AddScalar()`, `Scale()` |
 
 ### `stdlib/math.vl`
 
-Module-level functions: `Abs()`, `Min()`, `Max()`, `Clamp()`, `Pow()`, `Sign()`
+Module-level functions: `Abs()`, `Min()`, `Max()`, `Square()`, `Cube()`, `IsEven()`, `IsOdd()`, `AbsDiff()`, `InRange()`, `Clamp()`, `Pow()`, `Gcd()`, `Sign()`. `Abs()`, `Min()`, and `Max()` lower through DE1 native scalar instructions.
 
 ---
 

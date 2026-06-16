@@ -503,6 +503,8 @@ class TestClassAllocation:
         asm = compile(self.BASIC_CLASS)
         # Foo has empty OnFree so it falls back to Storeable_OnFree
         assert "Storeable_OnFree:" in asm
+        storeable_body = asm.split("Storeable_OnFree:", 1)[1].split("\n\n", 1)[0]
+        assert "BL __free" in storeable_body
 
     def test_bundled_storeable_resolves_outside_project_root(self, tmp_path):
         asm = compile_source(self.BASIC_CLASS, str(tmp_path / "program.vl"))

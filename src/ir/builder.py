@@ -580,16 +580,19 @@ class IRBuilder:
         self._emit(IRInstr(op=IROp.BRANCH_EQ, label=end_label))
 
         cls_name = self._free_class_name(stmt.expr)
+        onfree_label = None
         if cls_name:
+            onfree_label = self._resolve_onfree_label(cls_name)
             self._emit(IRInstr(op=IROp.PARAM, src1=ptr, imm=0))
             self._emit(IRInstr(
                 op=IROp.CALL,
-                label=self._resolve_onfree_label(cls_name),
+                label=onfree_label,
                 arg_count=1,
             ))
 
-        self._emit(IRInstr(op=IROp.PARAM, src1=ptr))
-        self._emit(IRInstr(op=IROp.CALL, label="__free", arg_count=1))
+        if onfree_label != "Storeable_OnFree":
+            self._emit(IRInstr(op=IROp.PARAM, src1=ptr))
+            self._emit(IRInstr(op=IROp.CALL, label="__free", arg_count=1))
         self._emit(IRInstr(op=IROp.LABEL, label=end_label))
 
     def _free_class_name(self, expr: Expr) -> str | None:

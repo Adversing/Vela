@@ -125,6 +125,51 @@ def test_examples_run_with_cpu_runner(example: str, expected: int, tmp_path: Pat
         (
             """
             module test {
+                class Foo {
+                    I16 value;
+                    OnAlloc(I16 v) { value = v; }
+                }
+                I16 main() {
+                    Ptr<Foo> a = Init<Foo>(v: 11);
+                    I16 pa = Cast<I16>(a);
+                    Free(a);
+                    Ptr<Foo> b = Init<Foo>(v: 22);
+                    I16 pb = Cast<I16>(b);
+                    Free(b);
+                    if (pa == pb) { ret 1; }
+                    ret 0;
+                }
+            }
+            """,
+            1,
+        ),
+        (
+            """
+            module test {
+                I16 destroyed = 0;
+                class Foo {
+                    OnAlloc() {}
+                    OnFree { destroyed = 9; }
+                }
+                I16 main() {
+                    Ptr<Foo> a = Init<Foo>();
+                    I16 pa = Cast<I16>(a);
+                    Free(a);
+                    Ptr<Foo> b = Init<Foo>();
+                    I16 pb = Cast<I16>(b);
+                    Free(b);
+                    if (destroyed == 9) {
+                        if (pa == pb) { ret 1; }
+                    }
+                    ret 0;
+                }
+            }
+            """,
+            1,
+        ),
+        (
+            """
+            module test {
                 I16 combine(I16 a, I16 b, I16 c, I16 d) {
                     ret a * 1000 + b * 100 + c * 10 + d;
                 }

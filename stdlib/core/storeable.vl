@@ -1,7 +1,10 @@
 module storeable {
     class Storeable {
         OnAlloc() {}
-        OnFree {}
+        OnFree {
+            Ptr<U0> raw = Cast<Ptr<U0>>(this);
+            Free(raw);
+        }
 
         I16 GetSize() {
             I16 result = 0;

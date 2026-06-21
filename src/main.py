@@ -16,7 +16,27 @@ from src.optimizer.devirtualizer import devirtualize
 from src.optimizer.inliner import inline_functions
 from src.optimizer.escape_analysis import escape_analyze
 from src.codegen.asm_emitter import AsmEmitter
-from src.errors import VelaError
+from src.errors import SemanticError, VelaError
+from src.parser.ast_nodes import FunctionDecl, Program
+
+
+def _require_main_function(ast: Program) -> None:
+    """Require a source-level main function before backend entry selection."""
+    for module in ast.modules:
+        for item in module.body:
+            if (
+                isinstance(item, FunctionDecl)
+                and item.name == "main"
+                and not item.is_skeleton
+            ):
+                return
+
+    location = ast.modules[0].location if ast.modules else None
+    raise SemanticError(
+        "program entry point 'main' is not defined",
+        location,
+        hint="define a top-level function named 'main'",
+    )
 
 
 def compile_source(source: str, filename: str = "<stdin>",
@@ -42,6 +62,7 @@ def compile_source(source: str, filename: str = "<stdin>",
     resolver = ModuleResolver(project_root)
     checker = TypeChecker(module_resolver=resolver)
     checker.check(ast)
+    _require_main_function(ast)
 
     # IR generation: include imported modules so their functions/classes
     # get code generated too.

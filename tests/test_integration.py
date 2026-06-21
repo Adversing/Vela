@@ -17,6 +17,11 @@ def compile_project(source: str) -> str:
     return compile_source(source, "test.vl", project_root=Path(__file__).resolve().parents[1])
 
 
+def test_compile_requires_main_function():
+    with pytest.raises(SemanticError, match="program entry point 'main' is not defined"):
+        compile("module test { I16 helper() { ret 1; } }")
+
+
 def test_imports_with_same_declared_module_name_from_different_files_compile(tmp_path):
     (tmp_path / "pkg_a").mkdir()
     (tmp_path / "pkg_b").mkdir()

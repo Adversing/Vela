@@ -23,7 +23,9 @@ class AsmEmitter:
 
     def emit(self, func_ir: dict[str, list[IRInstr]]) -> str:
         """Produce the complete .de1 file as a string."""
-        entry = "main" if "main" in func_ir else next(iter(func_ir), "main")
+        if "main" not in func_ir:
+            raise CodeGenError("program entry point 'main' is not defined")
+        entry = "main"
         func_ir = self._prune_unreachable_functions(func_ir, entry)
         self._func_ir = func_ir  # store for OnFree resolution
         self._full_vtables = any(

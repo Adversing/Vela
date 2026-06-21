@@ -15,6 +15,16 @@ def emit_main(instrs: list[IRInstr]) -> str:
     })
 
 
+def test_emitter_rejects_missing_main_entry():
+    with pytest.raises(CodeGenError, match="program entry point 'main' is not defined"):
+        AsmEmitter(TypeChecker()).emit({
+            "helper": [
+                IRInstr(op=IROp.LABEL, label="helper"),
+                IRInstr(op=IROp.RET, imm=0),
+            ],
+        })
+
+
 def test_small_negative_const_does_not_need_late_constant_pool_entry():
     asm = emit_main([
         IRInstr(op=IROp.CONST, dest="%x", imm=-1),

@@ -84,6 +84,13 @@ class TestTypeResolution:
                 module b { Ptr<Foo> x = null; }
             """)
 
+    def test_init_class_does_not_leak_between_modules_without_import(self):
+        with pytest.raises(SemanticError, match="undefined class 'Foo'"):
+            check("""
+                module a { class Foo { OnAlloc() {} } }
+                module b { I16 main() { Init<Foo>(); ret 0; } }
+            """)
+
     def test_type_decl_does_not_leak_between_modules_without_import(self):
         with pytest.raises(SemanticError, match="unknown type 'Shape'"):
             check("""

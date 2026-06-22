@@ -1148,7 +1148,20 @@ class TypeChecker:
             expr.inferred_type = PtrType_(inner=ot)
             return expr.inferred_type
         if isinstance(expr, InitExpr):
-            ct = self.class_types.get(expr.class_name)
+            visible_class = self._lookup_visible_symbol(expr.class_name, {"class"})
+            if visible_class is None and self.scopes.current.depth != 0:
+                raise self._undefined_name_error(
+                    "class",
+                    expr.class_name,
+                    expr.location,
+                    self._location_span(expr.location, len("Init")),
+                    self.scopes.visible_names(kinds={"class"}),
+                )
+            ct = (
+                visible_class.type
+                if visible_class is not None and isinstance(visible_class.type, ClassType)
+                else self.class_types.get(expr.class_name)
+            )
             if ct is None:
                 raise self._undefined_name_error(
                     "class",

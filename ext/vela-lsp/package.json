@@ -1,0 +1,27 @@
+{
+  "name": "vela-lsp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Language Server Protocol backend for Vela source files.",
+  "type": "module",
+  "bin": {
+    "vela-lsp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "vscode-languageserver": "^10.0.0-next.14",
+    "vscode-languageserver-textdocument": "^1.0.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
